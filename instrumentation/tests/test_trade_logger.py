@@ -1,0 +1,159 @@
+import json
+import tempfile
+from pathlib import Path
+from datetime import datetime, timezone
+from unittest.mock import MagicMock
+from instrumentation.src.trade_logger import TradeLogger
+from instrumentation.src.market_snapshot import MarketSnapshotService, MarketSnapshot
+
+
+def _mock_snapshot_service():
+    service = MagicMock(spec=MarketSnapshotService)
+    service.capture_now.return_value = MarketSnapshot(
+        snapshot_id="test_snap", symbol="NQ",
+        timestamp="2026-03-01T10:00:00Z",
+        bid=20500.0, ask=20500.50, mid=20500.25, spread_bps=0.24,
+        last_trade_price=20500.25, atr_14=85.0,
+    )
+    return service
+
+
+class TestTradeLogger:
+    def setup_method(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.config = {
+            "bot_id": "test_bot",
+            "data_dir": self.tmpdir,
+            "data_source_id": "test",
+            "market_snapshots": {"interval_seconds": 60, "symbols": []},
+        }
+        self.snap_service = _mock_snapshot_service()
+        self.logger = TradeLogger(self.config, self.snap_service)
+
+    def test_log_entry_creates_event(self):
+        trade = self.logger.log_entry(
+            trade_id="t1", pair="NQ", side="LONG",
+            entry_price=20500, position_size=1.0, position_size_quote=20500,
+            entry_signal="Class M bullish", entry_signal_id="class_m_bull",
+            entry_signal_strength=0.8, active_filters=["volume"],
+            passed_filters=["volume"], strategy_params={"trail_mult": 3.0},
+        )
+        assert trade.trade_id == "t1"
+        assert trade.side == "LONG"
+        assert trade.stage == "entry"
+        assert trade.entry_price == 20500
+
+    def test_log_exit_computes_pnl_long(self):
+        self.logger.log_entry(
+            trade_id="t1", pair="NQ", side="LONG",
+            entry_price=20000, position_size=1.0, position_size_quote=20000,
+            entry_signal="test", entry_signal_id="test",
+            entry_signal_strength=0.5, active_filters=[], passed_filters=[],
+            strategy_params={},
+        )
+        trade = self.logger.log_exit(
+            trade_id="t1", exit_price=20100, exit_reason="TAKE_PROFIT", fees_paid=10,
+        )
+        assert trade is not None
+        assert trade.pnl == 90.0  # (20100 - 20000) * 1.0 - 10
+        assert trade.stage == "exit"
+
+    def test_log_exit_computes_pnl_short(self):
+        self.logger.log_entry(
+            trade_id="t2", pair="NQ", side="SHORT",
+            entry_price=20000, position_size=1.0, position_size_quote=20000,
+            entry_signal="test", entry_signal_id="test",
+            entry_signal_strength=0.5, active_filters=[], passed_filters=[],
+            strategy_params={},
+        )
+        trade = self.logger.log_exit(
+            trade_id="t2", exit_price=19900, exit_reason="TAKE_PROFIT", fees_paid=10,
+        )
+        assert trade is not None
+        assert trade.pnl == 90.0  # (20000 - 19900) * 1.0 - 10
+        assert trade.stage == "exit"
+
+    def test_log_exit_missing_trade_returns_none(self):
+        result = self.logger.log_exit(
+            trade_id="nonexistent", exit_price=21000, exit_reason="SIGNAL",
+        )
+        assert result is None
+
+    def test_entry_failure_does_not_crash(self):
+        """Instrumentation failure must never block trading."""
+        self.snap_service.capture_now.side_effect = Exception("broken")
+        trade = self.logger.log_entry(
+            trade_id="t1", pair="NQ", side="LONG",
+            entry_price=20000, position_size=1.0, position_size_quote=20000,
+            entry_signal="test", entry_signal_id="test",
+            entry_signal_strength=0.5, active_filters=[], passed_filters=[],
+            strategy_params={},
+        )
+        # Should return a minimal trade, not crash
+        assert trade.trade_id == "t1"
+
+    def test_events_written_to_jsonl(self):
+        self.logger.log_entry(
+            trade_id="t1", pair="NQ", side="LONG",
+            entry_price=20000, position_size=1.0, position_size_quote=20000,
+            entry_signal="test", entry_signal_id="test",
+            entry_signal_strength=0.5, active_filters=[], passed_filters=[],
+            strategy_params={},
+        )
+        files = list(Path(self.tmpdir).joinpath("trades").glob("*.jsonl"))
+        assert len(files) == 1
+
+    def test_entry_and_exit_both_written(self):
+        self.logger.log_entry(
+            trade_id="t1", pair="NQ", side="LONG",
+            entry_price=20000, position_size=1.0, position_size_quote=20000,
+            entry_signal="test", entry_signal_id="test",
+            entry_signal_strength=0.5, active_filters=[], passed_filters=[],
+            strategy_params={},
+        )
+        self.logger.log_exit(
+            trade_id="t1", exit_price=20100, exit_reason="TAKE_PROFIT",
+        )
+        files = list(Path(self.tmpdir).joinpath("trades").glob("*.jsonl"))
+        lines = files[0].read_text().strip().split("\n")
+        assert len(lines) == 2
+        entry_data = json.loads(lines[0])
+        exit_data = json.loads(lines[1])
+        assert entry_data["stage"] == "entry"
+        assert exit_data["stage"] == "exit"
+
+    def test_entry_captures_snapshot_fields(self):
+        trade = self.logger.log_entry(
+            trade_id="t1", pair="NQ", side="LONG",
+            entry_price=20500, position_size=1.0, position_size_quote=20500,
+            entry_signal="test", entry_signal_id="test",
+            entry_signal_strength=0.5, active_filters=[], passed_filters=[],
+            strategy_params={},
+        )
+        assert trade.atr_at_entry == 85.0
+        assert trade.spread_at_entry_bps == 0.24
+
+    def test_entry_slippage_computed(self):
+        trade = self.logger.log_entry(
+            trade_id="t1", pair="NQ", side="LONG",
+            entry_price=20505, position_size=1.0, position_size_quote=20505,
+            entry_signal="test", entry_signal_id="test",
+            entry_signal_strength=0.5, active_filters=[], passed_filters=[],
+            strategy_params={}, expected_entry_price=20500,
+        )
+        assert trade.entry_slippage_bps is not None
+        assert trade.entry_slippage_bps > 0
+
+    def test_get_open_trades(self):
+        self.logger.log_entry(
+            trade_id="t1", pair="NQ", side="LONG",
+            entry_price=20000, position_size=1.0, position_size_quote=20000,
+            entry_signal="test", entry_signal_id="test",
+            entry_signal_strength=0.5, active_filters=[], passed_filters=[],
+            strategy_params={},
+        )
+        open_trades = self.logger.get_open_trades()
+        assert "t1" in open_trades
+        self.logger.log_exit(trade_id="t1", exit_price=20100, exit_reason="TP")
+        open_trades = self.logger.get_open_trades()
+        assert "t1" not in open_trades

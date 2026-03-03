@@ -1,0 +1,60 @@
+services:
+  helix:
+    profiles: ["helix"]
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: trading_helix
+    restart: unless-stopped
+    command: ["python", "-m", "strategy"]
+    env_file:
+      - ../.env
+    volumes:
+      - helix_instrumentation:/app/instrumentation/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - trading_net
+
+  nqdtc:
+    profiles: ["nqdtc"]
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: trading_nqdtc
+    restart: unless-stopped
+    command: ["python", "-m", "strategy_2"]
+    env_file:
+      - ../.env
+    volumes:
+      - nqdtc_instrumentation:/app/instrumentation/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - trading_net
+
+  vdubus:
+    profiles: ["vdubus"]
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: trading_vdubus
+    restart: unless-stopped
+    command: ["python", "-m", "strategy_3"]
+    env_file:
+      - ../.env
+    volumes:
+      - vdubus_instrumentation:/app/instrumentation/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - trading_net
+
+volumes:
+  helix_instrumentation:
+  nqdtc_instrumentation:
+  vdubus_instrumentation:
+
+networks:
+  trading_net:
+    external: true

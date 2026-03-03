@@ -1,0 +1,195 @@
+"""Instrumentation bootstrap — wires all components and integrates with OMS EventBus."""
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import TYPE_CHECKING, Optional
+
+import yaml
+
+if TYPE_CHECKING:
+    from shared.oms.services.oms_service import OMSService
+
+from .market_snapshot import MarketSnapshotService
+from .trade_logger import TradeLogger
+from .missed_opportunity import MissedOpportunityLogger
+from .process_scorer import ProcessScorer
+from .daily_snapshot import DailySnapshotBuilder
+from .regime_classifier import RegimeClassifier
+from .sidecar import Sidecar
+
+logger = logging.getLogger("instrumentation.bootstrap")
+
+
+def _load_config(strategy_id: str, strategy_type: str) -> dict:
+    """Load instrumentation_config.yaml and override bot_id with strategy_id."""
+    config_path = Path("instrumentation/config/instrumentation_config.yaml")
+    if config_path.exists():
+        with open(config_path) as f:
+            config = yaml.safe_load(f) or {}
+    else:
+        config = {}
+
+    config["bot_id"] = strategy_id
+    config["strategy_type"] = strategy_type
+    config.setdefault("data_dir", "instrumentation/data")
+    config.setdefault("data_source_id", "ibkr_cme_nq")
+    return config
+
+
+class InstrumentationManager:
+    """
+    Central bootstrap that creates all instrumentation services and connects
+    them to the OMS event bus.
+
+    Usage in strategy main.py:
+        instr = InstrumentationManager(oms, strategy_id, strategy_type)
+        await instr.start()
+        # ... run strategy ...
+        await instr.stop()
+    """
+
+    def __init__(
+        self,
+        oms: "OMSService",
+        strategy_id: str,
+        strategy_type: str,
+        data_provider=None,
+    ):
+        self._oms = oms
+        self._strategy_id = strategy_id
+        self._config = _load_config(strategy_id, strategy_type)
+
+        self.snapshot_service = MarketSnapshotService(self._config, data_provider)
+        self.process_scorer = ProcessScorer()
+        self.trade_logger = TradeLogger(
+            self._config, self.snapshot_service,
+            process_scorer=self.process_scorer,
+            strategy_type=strategy_type,
+        )
+        self.missed_logger = MissedOpportunityLogger(self._config, self.snapshot_service)
+        self.daily_builder = DailySnapshotBuilder(self._config)
+        self.regime_classifier = RegimeClassifier(data_provider=data_provider)
+        self.sidecar = Sidecar(self._config)
+
+        self._event_queue: Optional[asyncio.Queue] = None
+        self._event_task: Optional[asyncio.Task] = None
+        self._snapshot_task: Optional[asyncio.Task] = None
+        self._running = False
+
+    async def start(self) -> None:
+        """Subscribe to OMS events and start background tasks."""
+        if self._running:
+            return
+        self._running = True
+
+        try:
+            self._event_queue = self._oms.stream_all_events()
+            self._event_task = asyncio.create_task(self._event_loop())
+        except Exception as e:
+            logger.warning("Failed to subscribe to OMS events: %s", e)
+
+        interval = self._config.get("market_snapshots", {}).get("interval_seconds", 60)
+        self._snapshot_task = asyncio.create_task(self._periodic_snapshot_loop(interval))
+
+        try:
+            self.sidecar.start()
+        except Exception as e:
+            logger.warning("Failed to start sidecar: %s", e)
+
+        logger.info("Instrumentation started for %s", self._strategy_id)
+
+    async def stop(self) -> None:
+        """Shutdown: build daily snapshot, stop background tasks, stop sidecar."""
+        self._running = False
+
+        if self._event_task:
+            self._event_task.cancel()
+            try:
+                await self._event_task
+            except asyncio.CancelledError:
+                pass
+
+        if self._snapshot_task:
+            self._snapshot_task.cancel()
+            try:
+                await self._snapshot_task
+            except asyncio.CancelledError:
+                pass
+
+        if self._event_queue:
+            try:
+                self._oms.event_bus.unsubscribe_all(self._event_queue)
+            except Exception:
+                pass
+
+        try:
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            snapshot = self.daily_builder.build(today)
+            self.daily_builder.save(snapshot)
+            logger.info("Daily snapshot saved for %s", today)
+        except Exception as e:
+            logger.warning("Failed to build daily snapshot: %s", e)
+
+        try:
+            self.sidecar.run_once()
+            self.sidecar.stop()
+        except Exception as e:
+            logger.warning("Sidecar stop error: %s", e)
+
+        logger.info("Instrumentation stopped for %s", self._strategy_id)
+
+    async def _event_loop(self) -> None:
+        """Process OMS events — logs RISK_DENIAL as missed opportunities."""
+        from shared.oms.models.events import OMSEventType
+
+        while self._running:
+            try:
+                event = await asyncio.wait_for(self._event_queue.get(), timeout=5.0)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
+            try:
+                if event.event_type == OMSEventType.RISK_DENIAL:
+                    self._handle_risk_denial(event)
+            except Exception as e:
+                logger.warning("Error processing OMS event: %s", e)
+
+    def _handle_risk_denial(self, event) -> None:
+        """Log risk denials as missed opportunities with available context."""
+        try:
+            payload = event.payload or {}
+            reason = payload.get("reason", "unknown")
+            symbols = self._config.get("market_snapshots", {}).get("symbols", [])
+            pair = symbols[0] if symbols else "NQ"
+
+            self.missed_logger.log_missed(
+                pair=pair,
+                side="UNKNOWN",
+                signal=f"risk_denial_{self._strategy_id}",
+                signal_id=event.oms_order_id or "",
+                signal_strength=0.0,
+                blocked_by="risk_gateway",
+                block_reason=reason,
+                strategy_type=self._config.get("strategy_type"),
+                exchange_timestamp=event.timestamp,
+            )
+        except Exception as e:
+            logger.warning("Failed to log risk denial as missed: %s", e)
+
+    async def _periodic_snapshot_loop(self, interval: int) -> None:
+        """Capture market snapshots at regular intervals."""
+        while self._running:
+            try:
+                self.snapshot_service.run_periodic()
+            except Exception as e:
+                logger.warning("Periodic snapshot failed: %s", e)
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                break
