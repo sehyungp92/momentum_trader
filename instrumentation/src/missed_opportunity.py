@@ -71,6 +71,20 @@ class MissedOpportunityEvent:
     strategy_params_at_signal: Optional[dict] = None
     market_regime: str = ""
 
+    # Structured filter context (highest-impact #2)
+    filter_decisions: List[dict] = field(default_factory=list)
+
+    # Cross-strategy coordination context (critical gap #2)
+    coordination_context: Optional[dict] = None
+
+    # Concurrent position count at signal time (critical gap #4)
+    concurrent_positions_at_signal: Optional[int] = None
+
+    # Session and drawdown context
+    session_type: str = ""
+    drawdown_pct: Optional[float] = None
+    drawdown_tier: str = ""
+
     def to_dict(self) -> dict:
         return asdict(self)
 

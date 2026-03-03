@@ -60,6 +60,9 @@ class Helix4Engine:
         self.equity = equity
         self._instr = instrumentation
 
+        from instrumentation.src.facade import InstrumentationKit
+        self._kit = InstrumentationKit(self._instr, strategy_type="helix")
+
         self.nq_inst = instruments[0]
 
         # Bar series
@@ -117,21 +120,83 @@ class Helix4Engine:
         self._timer_task: Optional[asyncio.Task] = None
         self._last_session_actions: dict[str, datetime] = {}
 
+    def _dd_tier_name(self) -> str:
+        mult = self._throttle.dd_size_mult
+        if mult >= 1.0:
+            return "full"
+        elif mult >= 0.5:
+            return "half"
+        elif mult >= 0.25:
+            return "quarter"
+        return "halt"
+
+    def _build_gate_filter_decisions(self, setup, now_et) -> list[dict]:
+        """Build structured filter decisions from current gate state."""
+        from .config import HIGH_VOL_M_THRESHOLD
+        from .session import get_session_block, max_spread_for_session
+        block = get_session_block(now_et)
+        decisions = []
+
+        # Heat total
+        total_risk = self.risk.open_risk_r + self.risk.pending_risk_r
+        cap = self.risk.heat_cap_r()
+        decisions.append({
+            "filter_name": "heat_total",
+            "threshold": round(cap, 3),
+            "actual_value": round(total_risk, 3),
+            "passed": total_risk <= cap,
+            "margin_pct": round((cap - total_risk) / cap * 100, 1) if cap > 0 else None,
+        })
+
+        # Spread
+        if self._bid is not None and self._ask is not None:
+            spread = self._ask - self._bid
+            max_sp = max_spread_for_session(block)
+            decisions.append({
+                "filter_name": "spread",
+                "threshold": round(max_sp, 4),
+                "actual_value": round(spread, 4),
+                "passed": spread <= max_sp,
+                "margin_pct": round((max_sp - spread) / max_sp * 100, 1) if max_sp > 0 else None,
+            })
+
+        # High vol
+        decisions.append({
+            "filter_name": "high_vol",
+            "threshold": HIGH_VOL_M_THRESHOLD,
+            "actual_value": round(self.vol.vol_pct, 1),
+            "passed": self.vol.vol_pct <= HIGH_VOL_M_THRESHOLD,
+            "margin_pct": round((HIGH_VOL_M_THRESHOLD - self.vol.vol_pct) / HIGH_VOL_M_THRESHOLD * 100, 1)
+                if HIGH_VOL_M_THRESHOLD > 0 else None,
+        })
+
+        return decisions
+
     def _log_missed(self, setup, blocked_by: str, block_reason: str, **extra):
-        if not self._instr:
+        if not self._kit.active:
             return
         try:
-            self._instr.missed_logger.log_missed(
+            from .session import get_session_block
+            block = get_session_block(datetime.now(ET))
+            self._kit.log_missed(
                 pair=self.nq_inst.symbol,
                 side="LONG" if setup.direction == 1 else "SHORT",
                 signal=f"Class_{setup.cls.value}",
                 signal_id=setup.setup_id if hasattr(setup, 'setup_id') else "",
                 signal_strength=setup.alignment_score / 3.0,
-                blocked_by=blocked_by, block_reason=block_reason,
-                strategy_params={"cls": setup.cls.value, "score": setup.alignment_score,
-                                 "entry_stop": setup.entry_stop, "stop0": setup.stop0, **extra},
-                strategy_type="helix",
-                market_regime=self._instr.regime_classifier.current_regime(self.nq_inst.symbol),
+                blocked_by=blocked_by,
+                block_reason=block_reason,
+                strategy_params={
+                    "cls": setup.cls.value,
+                    "score": setup.alignment_score,
+                    "entry_stop": setup.entry_stop,
+                    "stop0": setup.stop0,
+                    **extra,
+                },
+                session_type=block.value,
+                concurrent_positions=len(self.positions.positions),
+                drawdown_pct=self._throttle.dd_pct if hasattr(self._throttle, 'dd_pct') else None,
+                drawdown_tier=self._dd_tier_name(),
             )
         except Exception:
             pass
@@ -430,6 +495,7 @@ class Helix4Engine:
                 dir_risk_r=self.risk.dir_risk_r.get(setup.direction, 0.0),
                 heat_cap_r=self.risk.heat_cap_r(),
                 heat_cap_dir_r=self.risk.heat_cap_dir_r(),
+                collect_all=True,
             )
 
             if not gate:
@@ -438,6 +504,9 @@ class Helix4Engine:
                         self._spread_recheck.append((setup, SPREAD_RECHECK_BARS))
                 self._log_missed(setup, f"gate_{gate.reason}", gate.reason)
                 continue
+
+            # Stash gate results for instrumentation
+            setup._filter_decisions = self._build_gate_filter_decisions(setup, now_et)
 
             # RTH_DEAD enhanced sizing
             ts_daily = trend_strength(self.daily)
@@ -632,9 +701,11 @@ class Helix4Engine:
         logger.info("Entry fill %s: %d @ %.2f, stop=%.2f, teleport=%s",
                      setup.setup_id, qty, fill_price, setup.stop0, is_teleport)
 
-        if self._instr:
+        if self._kit.active:
             try:
-                self._instr.trade_logger.log_entry(
+                from .session import get_session_block
+                block = get_session_block(datetime.now(ET))
+                self._kit.log_entry(
                     trade_id=setup.setup_id,
                     pair=self.nq_inst.symbol,
                     side="LONG" if setup.direction == 1 else "SHORT",
@@ -644,12 +715,32 @@ class Helix4Engine:
                     entry_signal=f"Class_{setup.cls.value}",
                     entry_signal_id=setup.setup_id,
                     entry_signal_strength=setup.alignment_score / 3.0,
-                    active_filters=[],
-                    passed_filters=[],
-                    strategy_params={"stop0": setup.stop0, "class": setup.cls.value,
-                                     "alignment_score": setup.alignment_score},
                     expected_entry_price=setup.entry_stop,
-                    market_regime=self._instr.regime_classifier.current_regime(self.nq_inst.symbol),
+                    strategy_params={
+                        "stop0": setup.stop0,
+                        "class": setup.cls.value,
+                        "alignment_score": setup.alignment_score,
+                    },
+                    signal_factors=[
+                        {"factor_name": "alignment_score", "factor_value": setup.alignment_score,
+                         "threshold": 1, "contribution": setup.alignment_score / 3.0},
+                    ],
+                    filter_decisions=getattr(setup, '_filter_decisions', []),
+                    sizing_inputs={
+                        "unit_risk_usd": setup.unit1_risk_usd,
+                        "setup_size_mult": setup.setup_size_mult,
+                        "session_size_mult": setup.session_size_mult,
+                        "hour_mult": self.risk.hour_size_mult(datetime.now(ET).hour),
+                        "dow_mult": self.risk.dow_size_mult(datetime.now(ET).weekday()),
+                        "dd_mult": self._throttle.dd_size_mult,
+                        "contracts": qty,
+                    },
+                    session_type=block.value,
+                    contract_month=getattr(self._contract, 'lastTradeDateOrContractMonth', ''),
+                    concurrent_positions=len(self.positions.positions),
+                    drawdown_pct=self._throttle.dd_pct if hasattr(self._throttle, 'dd_pct') else None,
+                    drawdown_tier=self._dd_tier_name(),
+                    drawdown_size_mult=self._throttle.dd_size_mult,
                 )
             except Exception:
                 pass
@@ -667,11 +758,12 @@ class Helix4Engine:
             self._throttle.update_equity(self.equity)
             self._throttle.record_trade_close(r_mult)
             self.positions._close_position(pos, exit_reason, fill_price, now_et)
-            if self._instr:
+            if self._kit.active:
                 try:
-                    self._instr.trade_logger.log_exit(
-                        trade_id=pos.origin_setup_id, exit_price=fill_price,
-                        exit_reason=exit_reason, fees_paid=0.0,
+                    self._kit.log_exit(
+                        trade_id=pos.origin_setup_id,
+                        exit_price=fill_price,
+                        exit_reason=exit_reason,
                     )
                 except Exception:
                     pass
@@ -696,11 +788,12 @@ class Helix4Engine:
             self._throttle.update_equity(self.equity)
             self._throttle.record_trade_close(r_mult)
             self.positions._close_position(pos, "EXIT_FILL", fill_price, now_et)
-            if self._instr:
+            if self._kit.active:
                 try:
-                    self._instr.trade_logger.log_exit(
-                        trade_id=pos.origin_setup_id, exit_price=fill_price,
-                        exit_reason="EXIT_FILL", fees_paid=0.0,
+                    self._kit.log_exit(
+                        trade_id=pos.origin_setup_id,
+                        exit_price=fill_price,
+                        exit_reason="EXIT_FILL",
                     )
                 except Exception:
                     pass

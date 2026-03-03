@@ -81,7 +81,14 @@ class IntentHandler:
             await self._repo.save_event(
                 order.oms_order_id, "RISK_DENIED", {"reason": denial}
             )
-            self._bus.emit_risk_denial(order.strategy_id, order.oms_order_id, denial)
+            self._bus.emit_risk_denial(
+                order.strategy_id, order.oms_order_id, denial,
+                extra_payload={
+                    "symbol": order.instrument.symbol if order.instrument else "",
+                    "side": order.side.value,
+                    "strategy_id": order.strategy_id,
+                },
+            )
             return IntentReceipt(
                 IntentResult.DENIED, intent_id, denial_reason=denial
             )

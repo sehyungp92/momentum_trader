@@ -139,3 +139,57 @@ class TestMissedOpportunityLogger:
         assert isinstance(d, dict)
         assert d["pair"] == "NQ"
         assert "assumption_tags" in d
+
+
+class TestMissedOpportunityEventNewFields:
+    """Verify all new fields added in Task 2 exist with correct defaults."""
+
+    def test_new_fields_default_values(self):
+        event = MissedOpportunityEvent(event_metadata={}, market_snapshot={})
+        assert event.filter_decisions == []
+        assert event.coordination_context is None
+        assert event.concurrent_positions_at_signal is None
+        assert event.session_type == ""
+        assert event.drawdown_pct is None
+        assert event.drawdown_tier == ""
+
+    def test_filter_decisions_is_mutable_list(self):
+        """Each instance should get its own list (field default_factory)."""
+        e1 = MissedOpportunityEvent(event_metadata={}, market_snapshot={})
+        e2 = MissedOpportunityEvent(event_metadata={}, market_snapshot={})
+        e1.filter_decisions.append({"filter": "volume", "passed": False})
+        assert len(e1.filter_decisions) == 1
+        assert len(e2.filter_decisions) == 0
+
+    def test_new_fields_in_to_dict(self):
+        event = MissedOpportunityEvent(
+            event_metadata={}, market_snapshot={},
+            filter_decisions=[{"filter": "dow_block", "passed": False, "reason": "Wednesday"}],
+            coordination_context={"helix_active": True, "heat_R": 2.1},
+            concurrent_positions_at_signal=3,
+            session_type="RTH_CORE",
+            drawdown_pct=1.5,
+            drawdown_tier="caution",
+        )
+        d = event.to_dict()
+        assert d["filter_decisions"] == [{"filter": "dow_block", "passed": False, "reason": "Wednesday"}]
+        assert d["coordination_context"] == {"helix_active": True, "heat_R": 2.1}
+        assert d["concurrent_positions_at_signal"] == 3
+        assert d["session_type"] == "RTH_CORE"
+        assert d["drawdown_pct"] == 1.5
+        assert d["drawdown_tier"] == "caution"
+
+    def test_new_fields_accept_explicit_values(self):
+        event = MissedOpportunityEvent(
+            event_metadata={}, market_snapshot={},
+            coordination_context={"portfolio_heat": 4.0},
+            concurrent_positions_at_signal=2,
+            session_type="ETH_QUALITY_PM",
+            drawdown_pct=3.2,
+            drawdown_tier="elevated",
+        )
+        assert event.coordination_context == {"portfolio_heat": 4.0}
+        assert event.concurrent_positions_at_signal == 2
+        assert event.session_type == "ETH_QUALITY_PM"
+        assert event.drawdown_pct == 3.2
+        assert event.drawdown_tier == "elevated"

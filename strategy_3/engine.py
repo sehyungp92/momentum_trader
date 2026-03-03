@@ -155,6 +155,9 @@ class VdubNQv4Engine:
         self._equity = equity
         self._instr = instrumentation
 
+        from instrumentation.src.facade import InstrumentationKit
+        self._kit = InstrumentationKit(self._instr, strategy_type="vdubus")
+
         # State
         self.regime = RegimeState()
         self.counters = DayCounters()
@@ -214,18 +217,19 @@ class VdubNQv4Engine:
 
     def _log_missed(self, direction, signal_type, signal_id: str, blocked_by: str,
                     block_reason: str, signal_strength: float = 0.5, **extra):
-        if not self._instr:
+        if not self._kit.active:
             return
         try:
-            self._instr.missed_logger.log_missed(
+            self._kit.log_missed(
                 pair="NQ",
                 side="LONG" if direction == Direction.LONG else "SHORT",
                 signal=signal_type.value if hasattr(signal_type, 'value') else str(signal_type),
                 signal_id=signal_id, signal_strength=signal_strength,
                 blocked_by=blocked_by, block_reason=block_reason,
                 strategy_params={"daily_trend": self.regime.daily_trend, **extra},
-                strategy_type="vdubus",
-                market_regime=self._instr.regime_classifier.current_regime("NQ"),
+                concurrent_positions=len(self.positions),
+                drawdown_pct=getattr(self._throttle, 'dd_pct', None),
+                drawdown_tier=self._dd_tier_name(),
             )
         except Exception:
             pass
@@ -1090,6 +1094,16 @@ class VdubNQv4Engine:
             new_stop_price=new_stop,
         ))
 
+    def _dd_tier_name(self) -> str:
+        mult = getattr(self._throttle, 'dd_size_mult', 1.0)
+        if mult >= 1.0:
+            return "full"
+        elif mult >= 0.5:
+            return "half"
+        elif mult >= 0.25:
+            return "quarter"
+        return "halt"
+
     async def _flatten_position(
         self, pos: PositionState, reason: str = "FLATTEN",
     ) -> None:
@@ -1128,11 +1142,12 @@ class VdubNQv4Engine:
                 logger.exception("Error recording exit")
 
         logger.info("FLATTEN %s reason=%s pnl=$%.2f", pos.trade_id, reason, realized_usd)
-        if self._instr and pos.trade_id:
+        if self._kit.active and pos.trade_id:
             try:
-                self._instr.trade_logger.log_exit(
-                    trade_id=pos.trade_id, exit_price=price,
-                    exit_reason=reason, fees_paid=0.0,
+                self._kit.log_exit(
+                    trade_id=pos.trade_id,
+                    exit_price=price,
+                    exit_reason=reason,
                 )
             except Exception:
                 pass
@@ -1235,10 +1250,10 @@ class VdubNQv4Engine:
                      we.entry_type.value, we.direction.name,
                      fill_qty, fill_price, pos.r_points)
 
-        if self._instr and trade_id:
+        if self._kit.active and trade_id:
             try:
                 pv = C.NQ_SPEC["point_value"]
-                self._instr.trade_logger.log_entry(
+                self._kit.log_entry(
                     trade_id=trade_id,
                     pair="NQ",
                     side="LONG" if we.direction == Direction.LONG else "SHORT",
@@ -1248,14 +1263,22 @@ class VdubNQv4Engine:
                     entry_signal=we.entry_type.value,
                     entry_signal_id=trade_id,
                     entry_signal_strength=we.class_mult,
-                    active_filters=[],
-                    passed_filters=[],
-                    strategy_params={"entry_type": we.entry_type.value,
-                                     "initial_stop": we.initial_stop,
-                                     "session": we.session.value if hasattr(we.session, 'value') else str(we.session),
-                                     "class_mult": we.class_mult},
                     expected_entry_price=we.stop_entry,
-                    market_regime=self._instr.regime_classifier.current_regime("NQ"),
+                    strategy_params={
+                        "entry_type": we.entry_type.value,
+                        "initial_stop": we.initial_stop,
+                        "session": we.session.value if hasattr(we.session, 'value') else str(we.session),
+                        "class_mult": we.class_mult,
+                    },
+                    signal_factors=[
+                        {"factor_name": "class_mult", "factor_value": we.class_mult,
+                         "threshold": 0.0, "contribution": we.class_mult},
+                    ],
+                    session_type=we.session.value if hasattr(we.session, 'value') else str(we.session),
+                    concurrent_positions=len(self.positions),
+                    drawdown_pct=getattr(self._throttle, 'dd_pct', None),
+                    drawdown_tier=self._dd_tier_name(),
+                    drawdown_size_mult=getattr(self._throttle, 'dd_size_mult', None),
                 )
             except Exception:
                 pass
@@ -1289,11 +1312,12 @@ class VdubNQv4Engine:
 
                 logger.info("STOPPED %s @ %.2f ($%.2f)",
                              pos.trade_id, fill_price, realized_usd)
-                if self._instr and pos.trade_id:
+                if self._kit.active and pos.trade_id:
                     try:
-                        self._instr.trade_logger.log_exit(
-                            trade_id=pos.trade_id, exit_price=fill_price,
-                            exit_reason="STOP", fees_paid=0.0,
+                        self._kit.log_exit(
+                            trade_id=pos.trade_id,
+                            exit_price=fill_price,
+                            exit_reason="STOP",
                         )
                     except Exception:
                         pass

@@ -49,3 +49,4 @@ ehthumbs.db
 
 # ── Claude Code local settings ───────────────────────
 .claude/
+.agents/

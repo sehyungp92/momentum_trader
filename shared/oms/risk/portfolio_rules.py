@@ -81,11 +81,27 @@ class PortfolioRuleChecker:
         get_strategy_signal: Callable[[str], Awaitable[Optional[dict]]],
         get_directional_risk_R: Callable[[str], Awaitable[float]],
         get_current_equity: Callable[[], float],
+        on_rule_event: Optional[Callable[[dict], None]] = None,
     ):
         self._cfg = config
         self._get_signal = get_strategy_signal
         self._get_dir_risk = get_directional_risk_R
         self._get_equity = get_current_equity
+        self._on_rule_event = on_rule_event
+
+    def _emit(self, event: dict) -> None:
+        if self._on_rule_event:
+            try:
+                self._on_rule_event(event)
+            except Exception:
+                pass
+
+    def _current_dd_pct(self) -> float:
+        equity = self._get_equity()
+        initial = self._cfg.initial_equity
+        if initial <= 0 or equity >= initial:
+            return 0.0
+        return (initial - equity) / initial
 
     async def check_entry(
         self,
@@ -99,33 +115,48 @@ class PortfolioRuleChecker:
         # 1. Proximity cooldown
         denial = await self._check_proximity_cooldown(strategy_id)
         if denial:
+            self._emit({"rule": "proximity_cooldown", "strategy_id": strategy_id,
+                         "approved": False, "denial_reason": denial})
             return PortfolioRuleResult(approved=False, denial_reason=denial)
 
         # 2. NQDTC direction filter (Vdubus only)
         size_mult = await self._check_direction_filter(strategy_id, direction)
         if size_mult == 0.0:
-            return PortfolioRuleResult(
-                approved=False,
-                denial_reason=f"nqdtc_direction_filter: NQDTC opposes {direction}",
-            )
+            reason = f"nqdtc_direction_filter: NQDTC opposes {direction}"
+            self._emit({"rule": "nqdtc_direction_filter", "strategy_id": strategy_id,
+                         "direction": direction, "approved": False, "denial_reason": reason})
+            return PortfolioRuleResult(approved=False, denial_reason=reason)
+        if size_mult != 1.0:
+            self._emit({"rule": "nqdtc_direction_filter", "strategy_id": strategy_id,
+                         "direction": direction, "approved": True, "size_multiplier": size_mult})
         result.size_multiplier *= size_mult
 
         # 3. Directional cap
         denial = await self._check_directional_cap(direction, new_risk_R)
         if denial:
+            self._emit({"rule": "directional_cap", "strategy_id": strategy_id,
+                         "direction": direction, "approved": False, "denial_reason": denial})
             return PortfolioRuleResult(approved=False, denial_reason=denial)
 
         # 4. Drawdown tiers
         dd_mult = self._check_drawdown_tier()
         if dd_mult == 0.0:
-            return PortfolioRuleResult(
-                approved=False,
-                denial_reason="drawdown_halt: equity drawdown exceeds maximum tier",
-            )
+            reason = "drawdown_halt: equity drawdown exceeds maximum tier"
+            self._emit({"rule": "drawdown_tier", "strategy_id": strategy_id,
+                         "approved": False, "denial_reason": reason,
+                         "drawdown_pct": self._current_dd_pct(), "size_multiplier": 0.0})
+            return PortfolioRuleResult(approved=False, denial_reason=reason)
+        if dd_mult < 1.0:
+            self._emit({"rule": "drawdown_tier", "strategy_id": strategy_id,
+                         "approved": True, "size_multiplier": dd_mult,
+                         "drawdown_pct": self._current_dd_pct()})
         result.size_multiplier *= dd_mult
 
         # 5. NQDTC chop throttle (affects Helix only)
         chop_mult = await self._check_chop_throttle(strategy_id)
+        if chop_mult < 1.0:
+            self._emit({"rule": "nqdtc_chop_throttle", "strategy_id": strategy_id,
+                         "approved": True, "size_multiplier": chop_mult})
         result.size_multiplier *= chop_mult
 
         return result

@@ -3,6 +3,7 @@ import asyncio
 import logging
 from collections import defaultdict
 from datetime import datetime, timezone
+from typing import Optional
 
 from ..models.events import OMSEvent, OMSEventType
 from ..models.order import OMSOrder, OrderStatus
@@ -83,14 +84,18 @@ class EventBus:
         self._dispatch(event)
 
     def emit_risk_denial(
-        self, strategy_id: str, oms_order_id: str, reason: str
+        self, strategy_id: str, oms_order_id: str, reason: str,
+        extra_payload: Optional[dict] = None,
     ) -> None:
+        payload = {"reason": reason}
+        if extra_payload:
+            payload.update(extra_payload)
         event = OMSEvent(
             event_type=OMSEventType.RISK_DENIAL,
             timestamp=datetime.now(timezone.utc),
             strategy_id=strategy_id,
             oms_order_id=oms_order_id,
-            payload={"reason": reason},
+            payload=payload,
         )
         self._dispatch(event)
 

@@ -3,7 +3,7 @@ import tempfile
 from pathlib import Path
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
-from instrumentation.src.trade_logger import TradeLogger
+from instrumentation.src.trade_logger import TradeLogger, TradeEvent
 from instrumentation.src.market_snapshot import MarketSnapshotService, MarketSnapshot
 
 
@@ -157,3 +157,99 @@ class TestTradeLogger:
         self.logger.log_exit(trade_id="t1", exit_price=20100, exit_reason="TP")
         open_trades = self.logger.get_open_trades()
         assert "t1" not in open_trades
+
+    def test_trade_event_has_enriched_fields(self):
+        """TradeEvent must have signal_factors, filter_decisions, sizing_inputs, futures context, concurrent positions, drawdown state, and post-exit tracking."""
+        te = TradeEvent(trade_id="t1", event_metadata={}, entry_snapshot={})
+
+        # Signal confluence (feedback highest-impact #1)
+        assert te.signal_factors == []
+        assert isinstance(te.signal_factors, list)
+
+        # Filter threshold context (feedback highest-impact #2)
+        assert te.filter_decisions == []
+        assert isinstance(te.filter_decisions, list)
+
+        # Position sizing inputs (feedback highest-impact #3)
+        assert te.sizing_inputs is None
+
+        # Futures-specific context (feedback critical gap #5)
+        assert te.session_type == ""
+        assert te.contract_month == ""
+        assert te.margin_used_pct is None
+
+        # Concurrent position tracking (feedback critical gap #4)
+        assert te.concurrent_positions_at_entry is None
+
+        # Drawdown state (feedback critical gap #3)
+        assert te.drawdown_pct is None
+        assert te.drawdown_tier == ""
+        assert te.drawdown_size_mult is None
+
+        # Post-exit price tracking (highest-impact #5)
+        assert te.post_exit_1h_price is None
+        assert te.post_exit_4h_price is None
+        assert te.post_exit_1h_move_pct is None
+        assert te.post_exit_4h_move_pct is None
+        assert te.post_exit_backfill_status == "pending"
+
+    def test_trade_event_enriched_fields_serialize(self):
+        """Enriched fields must round-trip through to_dict() / asdict()."""
+        te = TradeEvent(
+            trade_id="t1", event_metadata={}, entry_snapshot={},
+            signal_factors=[{"factor_name": "trend", "factor_value": 0.85, "threshold": 0.5, "contribution": 0.35}],
+            filter_decisions=[{"filter_name": "high_vol", "threshold": 97, "actual_value": 95, "passed": True, "margin_pct": 2.1}],
+            sizing_inputs={"target_risk_pct": 0.01, "account_equity": 100000, "sizing_model": "fixed_frac"},
+            session_type="RTH",
+            contract_month="2026-03",
+            margin_used_pct=42.5,
+            concurrent_positions_at_entry=2,
+            drawdown_pct=3.5,
+            drawdown_tier="full",
+            drawdown_size_mult=1.0,
+            post_exit_1h_price=20600.0,
+            post_exit_4h_price=20650.0,
+            post_exit_1h_move_pct=0.49,
+            post_exit_4h_move_pct=0.73,
+            post_exit_backfill_status="complete",
+        )
+        d = te.to_dict()
+        assert d["signal_factors"][0]["factor_name"] == "trend"
+        assert d["filter_decisions"][0]["filter_name"] == "high_vol"
+        assert d["sizing_inputs"]["sizing_model"] == "fixed_frac"
+        assert d["session_type"] == "RTH"
+        assert d["contract_month"] == "2026-03"
+        assert d["margin_used_pct"] == 42.5
+        assert d["concurrent_positions_at_entry"] == 2
+        assert d["drawdown_pct"] == 3.5
+        assert d["drawdown_tier"] == "full"
+        assert d["drawdown_size_mult"] == 1.0
+        assert d["post_exit_1h_price"] == 20600.0
+        assert d["post_exit_4h_price"] == 20650.0
+        assert d["post_exit_1h_move_pct"] == 0.49
+        assert d["post_exit_4h_move_pct"] == 0.73
+        assert d["post_exit_backfill_status"] == "complete"
+
+    def test_enriched_fields_do_not_affect_existing_entry_exit(self):
+        """Adding enriched fields must not change behavior of existing log_entry/log_exit."""
+        trade = self.logger.log_entry(
+            trade_id="t1", pair="NQ", side="LONG",
+            entry_price=20500, position_size=1.0, position_size_quote=20500,
+            entry_signal="Class M bullish", entry_signal_id="class_m_bull",
+            entry_signal_strength=0.8, active_filters=["volume"],
+            passed_filters=["volume"], strategy_params={"trail_mult": 3.0},
+        )
+        # Enriched fields should have defaults
+        assert trade.signal_factors == []
+        assert trade.filter_decisions == []
+        assert trade.sizing_inputs is None
+        assert trade.post_exit_backfill_status == "pending"
+
+        # Exit should still work normally
+        exit_trade = self.logger.log_exit(
+            trade_id="t1", exit_price=20600, exit_reason="TRAIL",
+        )
+        assert exit_trade is not None
+        assert exit_trade.pnl == 100.0
+        assert exit_trade.signal_factors == []
+        assert exit_trade.post_exit_backfill_status == "pending"

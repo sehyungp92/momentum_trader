@@ -165,6 +165,9 @@ class NQDTCEngine:
         self._instr = instrumentation
         self._instr_trade_id: str = ""  # current trade ID for instrumentation
 
+        from instrumentation.src.facade import InstrumentationKit
+        self._kit = InstrumentationKit(self._instr, strategy_type="nqdtc")
+
         # Dual session engines
         self._engines: dict[Session, SessionEngineState] = {
             Session.ETH: SessionEngineState(session=Session.ETH),
@@ -1687,16 +1690,17 @@ class NQDTCEngine:
         else:
             self._consec_losses = 0
 
-        if self._instr and self._instr_trade_id:
+        if self._kit.active and self._instr_trade_id:
             try:
                 r_pts = abs(pos.entry_price - pos.initial_stop_price)
                 if pos.direction == Direction.LONG:
                     est_exit = pos.entry_price + open_r * r_pts if r_pts > 0 else pos.entry_price
                 else:
                     est_exit = pos.entry_price - open_r * r_pts if r_pts > 0 else pos.entry_price
-                self._instr.trade_logger.log_exit(
+                self._kit.log_exit(
                     trade_id=self._instr_trade_id,
-                    exit_price=est_exit, exit_reason="FLATTEN", fees_paid=0.0,
+                    exit_price=est_exit,
+                    exit_reason="FLATTEN",
                 )
                 self._instr_trade_id = ""
             except Exception:
@@ -1704,6 +1708,16 @@ class NQDTCEngine:
 
         self._accumulate_realized_pnl(open_r)
         self._clear_position()
+
+    def _dd_tier_name(self) -> str:
+        mult = getattr(self._throttle, 'dd_size_mult', 1.0)
+        if mult >= 1.0:
+            return "full"
+        elif mult >= 0.5:
+            return "half"
+        elif mult >= 0.25:
+            return "quarter"
+        return "halt"
 
     def _clear_position(self) -> None:
         """Reset position state."""
@@ -1793,11 +1807,12 @@ class NQDTCEngine:
                 else:
                     self._consec_losses = 0
                 logger.info("Stop fill: price=%.2f R=%.2f", price, stop_r)
-                if self._instr and self._instr_trade_id:
+                if self._kit.active and self._instr_trade_id:
                     try:
-                        self._instr.trade_logger.log_exit(
+                        self._kit.log_exit(
                             trade_id=self._instr_trade_id,
-                            exit_price=price, exit_reason="STOP", fees_paid=0.0,
+                            exit_price=price,
+                            exit_reason="STOP",
                         )
                         self._instr_trade_id = ""
                     except Exception:
@@ -1915,12 +1930,12 @@ class NQDTCEngine:
             price, qty, stop_price, exit_tier.value, wo.quality_mult,
         )
 
-        if self._instr:
+        if self._kit.active:
             try:
                 self._instr_trade_id = oms_id
                 inst_obj = self._instruments.get(self._symbol)
                 pv = inst_obj.point_value if inst_obj else 20.0
-                self._instr.trade_logger.log_entry(
+                self._kit.log_entry(
                     trade_id=oms_id,
                     pair=self._symbol,
                     side="LONG" if wo.direction == Direction.LONG else "SHORT",
@@ -1930,12 +1945,22 @@ class NQDTCEngine:
                     entry_signal=wo.subtype.value,
                     entry_signal_id=oms_id,
                     entry_signal_strength=wo.quality_mult,
-                    active_filters=[],
-                    passed_filters=[],
-                    strategy_params={"stop": stop_price, "subtype": wo.subtype.value,
-                                     "exit_tier": exit_tier.value, "quality_mult": wo.quality_mult},
                     expected_entry_price=wo.stop_for_risk,
-                    market_regime=self._instr.regime_classifier.current_regime(self._symbol),
+                    strategy_params={
+                        "stop": stop_price,
+                        "subtype": wo.subtype.value,
+                        "exit_tier": exit_tier.value,
+                        "quality_mult": wo.quality_mult,
+                    },
+                    signal_factors=[
+                        {"factor_name": "quality_mult", "factor_value": wo.quality_mult,
+                         "threshold": 0.0, "contribution": wo.quality_mult},
+                    ],
+                    sizing_inputs={"quality_mult": wo.quality_mult, "contracts": qty},
+                    concurrent_positions=1 if self._position.open else 0,
+                    drawdown_pct=getattr(self._throttle, 'dd_pct', None),
+                    drawdown_tier=self._dd_tier_name(),
+                    drawdown_size_mult=getattr(self._throttle, 'dd_size_mult', None),
                 )
             except Exception:
                 pass
@@ -2107,10 +2132,10 @@ class NQDTCEngine:
 
     def _log_missed(self, direction, signal: str, signal_id: str, blocked_by: str,
                     block_reason: str, signal_strength: float = 0.5, **extra):
-        if not self._instr:
+        if not self._kit.active:
             return
         try:
-            self._instr.missed_logger.log_missed(
+            self._kit.log_missed(
                 pair=self._symbol,
                 side="LONG" if direction == Direction.LONG else "SHORT",
                 signal=signal, signal_id=signal_id,
@@ -2118,8 +2143,9 @@ class NQDTCEngine:
                 blocked_by=blocked_by, block_reason=block_reason,
                 strategy_params={"composite": self._regime.composite.value
                                  if self._regime.composite else "", **extra},
-                strategy_type="nqdtc",
-                market_regime=self._instr.regime_classifier.current_regime(self._symbol),
+                concurrent_positions=1 if self._position.open else 0,
+                drawdown_pct=getattr(self._throttle, 'dd_pct', None),
+                drawdown_tier=self._dd_tier_name(),
             )
         except Exception:
             pass

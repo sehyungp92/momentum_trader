@@ -1,7 +1,7 @@
 import json
 import logging
 from dataclasses import dataclass, asdict, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
@@ -56,6 +56,40 @@ class TradeEvent:
     # Strategy config snapshot
     strategy_params_at_entry: Optional[dict] = None
 
+    # Signal confluence factors (highest-impact #1)
+    # Each dict: {factor_name: str, factor_value: float, threshold: float, contribution: float}
+    signal_factors: List[dict] = field(default_factory=list)
+
+    # Filter threshold context (highest-impact #2)
+    # Each dict: {filter_name: str, threshold: float, actual_value: float, passed: bool, margin_pct: float}
+    filter_decisions: List[dict] = field(default_factory=list)
+
+    # Position sizing inputs (highest-impact #3)
+    # Dict: {target_risk_pct: float, account_equity: float, volatility_basis: float,
+    #         sizing_model: str, unit_risk_usd: float, setup_size_mult: float,
+    #         session_size_mult: float, hour_mult: float, dow_mult: float, dd_mult: float}
+    sizing_inputs: Optional[dict] = None
+
+    # Futures-specific context (critical gap #5)
+    session_type: str = ""           # "RTH" / "ETH" / specific block name
+    contract_month: str = ""         # e.g. "2026-03" or "MARCH_2026"
+    margin_used_pct: Optional[float] = None
+
+    # Concurrent position tracking (critical gap #4)
+    concurrent_positions_at_entry: Optional[int] = None
+
+    # Drawdown state at entry (critical gap #3)
+    drawdown_pct: Optional[float] = None
+    drawdown_tier: str = ""          # "full" / "half" / "quarter" / "halt"
+    drawdown_size_mult: Optional[float] = None
+
+    # Post-exit price tracking (highest-impact #5)
+    post_exit_1h_price: Optional[float] = None
+    post_exit_4h_price: Optional[float] = None
+    post_exit_1h_move_pct: Optional[float] = None
+    post_exit_4h_move_pct: Optional[float] = None
+    post_exit_backfill_status: str = "pending"
+
     # Execution quality
     expected_entry_price: Optional[float] = None
     entry_slippage_bps: Optional[float] = None
@@ -91,6 +125,7 @@ class TradeLogger:
         self.process_scorer = process_scorer
         self.strategy_type = strategy_type or config.get("strategy_type", "unknown")
         self._open_trades: Dict[str, TradeEvent] = {}
+        self._pending_exit_backfills: list[dict] = []
 
     def log_entry(
         self,
@@ -224,6 +259,16 @@ class TradeLogger:
 
             self._write_event(trade)
 
+            # Queue post-exit price backfill
+            self._pending_exit_backfills.append({
+                "trade_id": trade_id,
+                "pair": trade.pair,
+                "side": trade.side,
+                "exit_price": exit_price,
+                "exit_time": exch_ts,
+                "file_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            })
+
             # Score process quality if scorer is available
             if self.process_scorer:
                 try:
@@ -281,3 +326,81 @@ class TradeLogger:
                 f.write(json.dumps(entry) + "\n")
         except Exception:
             pass
+
+    def run_post_exit_backfill(self, data_provider) -> None:
+        """Backfill 1h/4h post-exit prices. Call periodically."""
+        now = datetime.now(timezone.utc)
+        completed = []
+
+        for item in list(self._pending_exit_backfills):
+            elapsed = now - item["exit_time"]
+            if elapsed < timedelta(hours=4):
+                continue
+
+            try:
+                candles = data_provider.get_ohlcv(
+                    item["pair"], timeframe="5m",
+                    since=int(item["exit_time"].timestamp() * 1000),
+                    limit=60,
+                )
+                if not candles or len(candles) < 12:
+                    continue
+
+                price_1h = None
+                price_4h = None
+                for candle in candles:
+                    candle_time = datetime.fromtimestamp(candle[0] / 1000, tz=timezone.utc)
+                    candle_elapsed = candle_time - item["exit_time"]
+                    if candle_elapsed >= timedelta(hours=1) and price_1h is None:
+                        price_1h = candle[4]
+                    if candle_elapsed >= timedelta(hours=4) and price_4h is None:
+                        price_4h = candle[4]
+
+                exit_price = item["exit_price"]
+                side = item["side"]
+
+                def move_pct(post_price):
+                    if post_price is None or exit_price == 0:
+                        return None
+                    if side == "LONG":
+                        return round((post_price - exit_price) / exit_price * 100, 4)
+                    else:
+                        return round((exit_price - post_price) / exit_price * 100, 4)
+
+                outcomes = {
+                    "post_exit_1h_price": price_1h,
+                    "post_exit_4h_price": price_4h,
+                    "post_exit_1h_move_pct": move_pct(price_1h),
+                    "post_exit_4h_move_pct": move_pct(price_4h),
+                    "post_exit_backfill_status": "complete",
+                }
+
+                self._update_trade_event(item["trade_id"], item["file_date"], outcomes)
+                completed.append(item)
+
+            except Exception as e:
+                logger.warning("Post-exit backfill failed for %s: %s", item["trade_id"], e)
+
+        for c in completed:
+            if c in self._pending_exit_backfills:
+                self._pending_exit_backfills.remove(c)
+
+    def _update_trade_event(self, trade_id: str, file_date: str, updates: dict) -> None:
+        """Update a completed trade event in the JSONL file."""
+        filepath = self.data_dir / f"trades_{file_date}.jsonl"
+        if not filepath.exists():
+            return
+        try:
+            lines = filepath.read_text().strip().split("\n")
+            new_lines = []
+            for line in lines:
+                try:
+                    event = json.loads(line)
+                    if event.get("trade_id") == trade_id and event.get("stage") == "exit":
+                        event.update(updates)
+                    new_lines.append(json.dumps(event, default=str))
+                except json.JSONDecodeError:
+                    new_lines.append(line)
+            filepath.write_text("\n".join(new_lines) + "\n")
+        except Exception as e:
+            logger.warning("Failed to update trade %s: %s", trade_id, e)

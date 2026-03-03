@@ -165,15 +165,20 @@ class InstrumentationManager:
         try:
             payload = event.payload or {}
             reason = payload.get("reason", "unknown")
+
+            # Use enriched payload from IntentHandler, fall back to defaults
             symbols = self._config.get("market_snapshots", {}).get("symbols", [])
-            pair = symbols[0] if symbols else "NQ"
+            pair = payload.get("symbol") or (symbols[0] if symbols else "NQ")
+            side = payload.get("side", "UNKNOWN")
+            signal = payload.get("signal_name", f"risk_denial_{self._strategy_id}")
+            signal_strength = payload.get("signal_strength", 0.0)
 
             self.missed_logger.log_missed(
                 pair=pair,
-                side="UNKNOWN",
-                signal=f"risk_denial_{self._strategy_id}",
+                side=side,
+                signal=signal,
                 signal_id=event.oms_order_id or "",
-                signal_strength=0.0,
+                signal_strength=signal_strength,
                 blocked_by="risk_gateway",
                 block_reason=reason,
                 strategy_type=self._config.get("strategy_type"),
@@ -189,6 +194,12 @@ class InstrumentationManager:
                 self.snapshot_service.run_periodic()
             except Exception as e:
                 logger.warning("Periodic snapshot failed: %s", e)
+            # Post-exit price backfill
+            try:
+                if hasattr(self.snapshot_service, '_data_provider') and self.snapshot_service._data_provider:
+                    self.trade_logger.run_post_exit_backfill(self.snapshot_service._data_provider)
+            except Exception as e:
+                logger.warning("Post-exit backfill failed: %s", e)
             try:
                 await asyncio.sleep(interval)
             except asyncio.CancelledError:
