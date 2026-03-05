@@ -270,6 +270,8 @@ class PositionState:
     bars_since_entry_30m: int = 0
     highest_since_entry: float = 0.0
     lowest_since_entry: float = 0.0
+    peak_mfe_r: float = 0.0        # best favorable excursion in R-multiples
+    peak_mae_r: float = 0.0        # worst adverse excursion in R-multiples (always >= 0)
     hold_ref: float = 0.0     # for C entries
     box_high_at_entry: float = 0.0
     box_low_at_entry: float = 0.0

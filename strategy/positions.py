@@ -96,6 +96,8 @@ class PositionManager:
             alignment_score_at_entry=setup.alignment_score,
             current_alignment_score=setup.alignment_score,
             entry_contracts=qty,
+            highest_since_entry=fill_price,
+            lowest_since_entry=fill_price,
         )
         self.positions.append(pos)
         return pos
@@ -139,6 +141,9 @@ class PositionManager:
             R_total = r_state(pos, last_price, self.pv)
             R_unr = unrealized_r(pos, last_price, self.pv)
             pos.peak_mfe_r = max(pos.peak_mfe_r, max(0.0, R_total))
+            pos.peak_mae_r = max(pos.peak_mae_r, max(0.0, -R_total))
+            pos.highest_since_entry = max(pos.highest_since_entry, h1.last_high)
+            pos.lowest_since_entry = min(pos.lowest_since_entry, h1.last_low)
 
             pos.current_alignment_score = alignment_score(pos.direction, daily, h4)
 

@@ -116,6 +116,7 @@ class PositionState:
     bars_since_partial: int = 0     # bars elapsed since +1R partial
     peak_r_since_free: float = 0.0  # highest unrealized R since ACTIVE_FREE
     peak_mfe_r: float = 0.0        # max favorable R excursion (for early kill)
+    peak_mae_r: float = 0.0        # worst adverse excursion in R-multiples (always >= 0)
     early_warning_bar: int = -1    # bar when early kill warning first triggered (-1 = none)
 
 

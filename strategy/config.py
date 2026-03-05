@@ -384,6 +384,9 @@ class PositionState:
     alignment_score_at_entry: int = 0
     current_alignment_score: int = 0
     peak_mfe_r: float = 0.0
+    peak_mae_r: float = 0.0  # worst adverse excursion in R-multiples (always >= 0)
+    highest_since_entry: float = 0.0
+    lowest_since_entry: float = float('inf')
 
     # Risk tracking
     current_risk_r: float = 0.0

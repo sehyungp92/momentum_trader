@@ -37,6 +37,11 @@ def _load_config(strategy_id: str, strategy_type: str) -> dict:
     config["strategy_type"] = strategy_type
     config.setdefault("data_dir", "instrumentation/data")
     config.setdefault("data_source_id", "ibkr_cme_nq")
+
+    # Experiment tracking from config or environment
+    config["experiment_id"] = config.get("experiment_id") or os.environ.get("EXPERIMENT_ID")
+    config["experiment_variant"] = config.get("experiment_variant") or os.environ.get("EXPERIMENT_VARIANT")
+
     return config
 
 

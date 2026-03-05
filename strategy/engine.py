@@ -26,6 +26,8 @@ from .config import (
     VOL_50_80_SIZING_MULT, DOW_BLOCKED, HOUR_SIZE_MULT,
     CLASS_T_MIN_BARS_SINCE_M,
 )
+from instrumentation.src.config_snapshot import snapshot_config_module
+from strategy import config as strategy_config
 from .indicators import BarSeries, VolEngine
 from .pivots import PivotDetector
 from .signals import SignalEngine, alignment_score, trend_strength
@@ -705,6 +707,25 @@ class Helix4Engine:
             try:
                 from .session import get_session_block
                 block = get_session_block(datetime.now(ET))
+                config_snapshot = snapshot_config_module(strategy_config)
+
+                # Capture portfolio state at entry (G4)
+                portfolio_state = None
+                try:
+                    risk_state = self.oms.get_portfolio_risk()
+                    portfolio_state = {
+                        "total_exposure_r": risk_state.open_risk_R,
+                        "daily_realized_pnl": risk_state.daily_realized_pnl,
+                        "daily_realized_r": risk_state.daily_realized_R,
+                        "weekly_realized_pnl": risk_state.weekly_realized_pnl,
+                        "weekly_realized_r": risk_state.weekly_realized_R,
+                        "open_risk_r": risk_state.open_risk_R,
+                        "pending_entry_risk_r": risk_state.pending_entry_risk_R,
+                        "halted": risk_state.halted,
+                    }
+                except Exception:
+                    portfolio_state = None
+
                 self._kit.log_entry(
                     trade_id=setup.setup_id,
                     pair=self.nq_inst.symbol,
@@ -720,6 +741,7 @@ class Helix4Engine:
                         "stop0": setup.stop0,
                         "class": setup.cls.value,
                         "alignment_score": setup.alignment_score,
+                        **config_snapshot,
                     },
                     signal_factors=[
                         {"factor_name": "alignment_score", "factor_value": setup.alignment_score,
@@ -741,6 +763,7 @@ class Helix4Engine:
                     drawdown_pct=self._throttle.dd_pct if hasattr(self._throttle, 'dd_pct') else None,
                     drawdown_tier=self._dd_tier_name(),
                     drawdown_size_mult=self._throttle.dd_size_mult,
+                    portfolio_state=portfolio_state,
                 )
             except Exception:
                 pass
@@ -764,6 +787,10 @@ class Helix4Engine:
                         trade_id=pos.origin_setup_id,
                         exit_price=fill_price,
                         exit_reason=exit_reason,
+                        mfe_r=pos.peak_mfe_r,
+                        mae_r=pos.peak_mae_r,
+                        mfe_price=pos.highest_since_entry if pos.direction == 1 else pos.lowest_since_entry,
+                        mae_price=pos.lowest_since_entry if pos.direction == 1 else pos.highest_since_entry,
                     )
                 except Exception:
                     pass
@@ -794,6 +821,10 @@ class Helix4Engine:
                         trade_id=pos.origin_setup_id,
                         exit_price=fill_price,
                         exit_reason="EXIT_FILL",
+                        mfe_r=pos.peak_mfe_r,
+                        mae_r=pos.peak_mae_r,
+                        mfe_price=pos.highest_since_entry if pos.direction == 1 else pos.lowest_since_entry,
+                        mae_price=pos.lowest_since_entry if pos.direction == 1 else pos.highest_since_entry,
                     )
                 except Exception:
                     pass

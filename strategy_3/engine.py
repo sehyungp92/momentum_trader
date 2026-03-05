@@ -34,6 +34,8 @@ from .models import (
     PositionStage, PositionState, RegimeState, SessionWindow, SubWindow,
     VolState, WorkingEntry,
 )
+from instrumentation.src.config_snapshot import snapshot_config_module
+from strategy_3 import config as strategy_config
 
 logger = logging.getLogger(__name__)
 
@@ -744,6 +746,7 @@ class VdubNQv4Engine:
             # Update peak MFE R for early kill tracking
             unreal_r = self._unrealized_r(pos, price)
             pos.peak_mfe_r = max(pos.peak_mfe_r, unreal_r)
+            pos.peak_mae_r = max(pos.peak_mae_r, max(0.0, -unreal_r))
 
             # Early kill: fast-dying trades
             if exits.check_early_kill(pos, price):
@@ -1148,6 +1151,10 @@ class VdubNQv4Engine:
                     trade_id=pos.trade_id,
                     exit_price=price,
                     exit_reason=reason,
+                    mfe_r=pos.peak_mfe_r,
+                    mae_r=pos.peak_mae_r,
+                    mfe_price=pos.highest_since_entry if pos.direction == Direction.LONG else pos.lowest_since_entry,
+                    mae_price=pos.lowest_since_entry if pos.direction == Direction.LONG else pos.highest_since_entry,
                 )
             except Exception:
                 pass
@@ -1253,6 +1260,25 @@ class VdubNQv4Engine:
         if self._kit.active and trade_id:
             try:
                 pv = C.NQ_SPEC["point_value"]
+                config_snapshot = snapshot_config_module(strategy_config)
+
+                # Capture portfolio state at entry (G4)
+                portfolio_state = None
+                try:
+                    risk_state = self._oms.get_portfolio_risk()
+                    portfolio_state = {
+                        "total_exposure_r": risk_state.open_risk_R,
+                        "daily_realized_pnl": risk_state.daily_realized_pnl,
+                        "daily_realized_r": risk_state.daily_realized_R,
+                        "weekly_realized_pnl": risk_state.weekly_realized_pnl,
+                        "weekly_realized_r": risk_state.weekly_realized_R,
+                        "open_risk_r": risk_state.open_risk_R,
+                        "pending_entry_risk_r": risk_state.pending_entry_risk_R,
+                        "halted": risk_state.halted,
+                    }
+                except Exception:
+                    portfolio_state = None
+
                 self._kit.log_entry(
                     trade_id=trade_id,
                     pair="NQ",
@@ -1269,6 +1295,7 @@ class VdubNQv4Engine:
                         "initial_stop": we.initial_stop,
                         "session": we.session.value if hasattr(we.session, 'value') else str(we.session),
                         "class_mult": we.class_mult,
+                        **config_snapshot,
                     },
                     signal_factors=[
                         {"factor_name": "class_mult", "factor_value": we.class_mult,
@@ -1279,6 +1306,7 @@ class VdubNQv4Engine:
                     drawdown_pct=getattr(self._throttle, 'dd_pct', None),
                     drawdown_tier=self._dd_tier_name(),
                     drawdown_size_mult=getattr(self._throttle, 'dd_size_mult', None),
+                    portfolio_state=portfolio_state,
                 )
             except Exception:
                 pass
@@ -1318,6 +1346,10 @@ class VdubNQv4Engine:
                             trade_id=pos.trade_id,
                             exit_price=fill_price,
                             exit_reason="STOP",
+                            mfe_r=pos.peak_mfe_r,
+                            mae_r=pos.peak_mae_r,
+                            mfe_price=pos.highest_since_entry if pos.direction == Direction.LONG else pos.lowest_since_entry,
+                            mae_price=pos.lowest_since_entry if pos.direction == Direction.LONG else pos.highest_since_entry,
                         )
                     except Exception:
                         pass

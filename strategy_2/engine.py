@@ -35,6 +35,8 @@ from .models import (
     PositionState, RegimeState, Regime4H, RollingBuffer, Session,
     SessionEngineState, TPLevel, VWAPAccumulator, WorkingOrder,
 )
+from instrumentation.src.config_snapshot import snapshot_config_module
+from strategy_2 import config as strategy_config
 
 logger = logging.getLogger(__name__)
 
@@ -1365,6 +1367,15 @@ class NQDTCEngine:
             pos.highest_since_entry = high
         if low < pos.lowest_since_entry:
             pos.lowest_since_entry = low
+        # Update MFE/MAE in R-multiples
+        _risk_per_unit = abs(pos.entry_price - pos.stop_price) if pos.stop_price else 1.0
+        if _risk_per_unit > 0:
+            if pos.direction == Direction.LONG:
+                _current_r = (close - pos.entry_price) / _risk_per_unit
+            else:
+                _current_r = (pos.entry_price - close) / _risk_per_unit
+            pos.peak_mfe_r = max(pos.peak_mfe_r, max(0.0, _current_r))
+            pos.peak_mae_r = max(pos.peak_mae_r, max(0.0, -_current_r))
 
         # Compute open R
         r_points = abs(pos.entry_price - pos.stop_price)
@@ -1701,6 +1712,10 @@ class NQDTCEngine:
                     trade_id=self._instr_trade_id,
                     exit_price=est_exit,
                     exit_reason="FLATTEN",
+                    mfe_r=pos.peak_mfe_r,
+                    mae_r=pos.peak_mae_r,
+                    mfe_price=pos.highest_since_entry if pos.direction == Direction.LONG else pos.lowest_since_entry,
+                    mae_price=pos.lowest_since_entry if pos.direction == Direction.LONG else pos.highest_since_entry,
                 )
                 self._instr_trade_id = ""
             except Exception:
@@ -1813,6 +1828,10 @@ class NQDTCEngine:
                             trade_id=self._instr_trade_id,
                             exit_price=price,
                             exit_reason="STOP",
+                            mfe_r=self._position.peak_mfe_r,
+                            mae_r=self._position.peak_mae_r,
+                            mfe_price=self._position.highest_since_entry if self._position.direction == Direction.LONG else self._position.lowest_since_entry,
+                            mae_price=self._position.lowest_since_entry if self._position.direction == Direction.LONG else self._position.highest_since_entry,
                         )
                         self._instr_trade_id = ""
                     except Exception:
@@ -1935,6 +1954,25 @@ class NQDTCEngine:
                 self._instr_trade_id = oms_id
                 inst_obj = self._instruments.get(self._symbol)
                 pv = inst_obj.point_value if inst_obj else 20.0
+                config_snapshot = snapshot_config_module(strategy_config)
+
+                # Capture portfolio state at entry (G4)
+                portfolio_state = None
+                try:
+                    risk_state = self._oms.get_portfolio_risk()
+                    portfolio_state = {
+                        "total_exposure_r": risk_state.open_risk_R,
+                        "daily_realized_pnl": risk_state.daily_realized_pnl,
+                        "daily_realized_r": risk_state.daily_realized_R,
+                        "weekly_realized_pnl": risk_state.weekly_realized_pnl,
+                        "weekly_realized_r": risk_state.weekly_realized_R,
+                        "open_risk_r": risk_state.open_risk_R,
+                        "pending_entry_risk_r": risk_state.pending_entry_risk_R,
+                        "halted": risk_state.halted,
+                    }
+                except Exception:
+                    portfolio_state = None
+
                 self._kit.log_entry(
                     trade_id=oms_id,
                     pair=self._symbol,
@@ -1951,6 +1989,7 @@ class NQDTCEngine:
                         "subtype": wo.subtype.value,
                         "exit_tier": exit_tier.value,
                         "quality_mult": wo.quality_mult,
+                        **config_snapshot,
                     },
                     signal_factors=[
                         {"factor_name": "quality_mult", "factor_value": wo.quality_mult,
@@ -1961,6 +2000,7 @@ class NQDTCEngine:
                     drawdown_pct=getattr(self._throttle, 'dd_pct', None),
                     drawdown_tier=self._dd_tier_name(),
                     drawdown_size_mult=getattr(self._throttle, 'dd_size_mult', None),
+                    portfolio_state=portfolio_state,
                 )
             except Exception:
                 pass

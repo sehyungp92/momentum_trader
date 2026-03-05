@@ -85,6 +85,13 @@ class MissedOpportunityEvent:
     drawdown_pct: Optional[float] = None
     drawdown_tier: str = ""
 
+    # Market conditions at entry (G8)
+    market_conditions_at_entry: Optional[dict] = None
+
+    # Experiment tracking (G5, B11)
+    experiment_id: Optional[str] = None
+    experiment_variant: Optional[str] = None
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -104,6 +111,8 @@ class MissedOpportunityLogger:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.snapshot_service = snapshot_service
         self.data_source_id = config.get("data_source_id", "ibkr_cme_nq")
+        self.experiment_id = config.get("experiment_id")
+        self.experiment_variant = config.get("experiment_variant")
 
         self.simulation_policies = self._load_simulation_policies(config)
         self._pending_backfills: List[Dict] = []
@@ -225,6 +234,8 @@ class MissedOpportunityLogger:
                 assumption_tags=assumption_tags,
                 strategy_params_at_signal=strategy_params,
                 market_regime=market_regime,
+                experiment_id=self.experiment_id,
+                experiment_variant=self.experiment_variant,
                 backfill_status="pending",
             )
 

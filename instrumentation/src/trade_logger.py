@@ -70,6 +70,9 @@ class TradeEvent:
     #         session_size_mult: float, hour_mult: float, dow_mult: float, dd_mult: float}
     sizing_inputs: Optional[dict] = None
 
+    # Portfolio state at entry (G4)
+    portfolio_state_at_entry: Optional[dict] = None
+
     # Futures-specific context (critical gap #5)
     session_type: str = ""           # "RTH" / "ETH" / specific block name
     contract_month: str = ""         # e.g. "2026-03" or "MARCH_2026"
@@ -90,6 +93,25 @@ class TradeEvent:
     post_exit_4h_move_pct: Optional[float] = None
     post_exit_backfill_status: str = "pending"
 
+    # MFE/MAE (Gap G1, B5)
+    mfe_r: Optional[float] = None           # peak favorable excursion in R-multiples
+    mae_r: Optional[float] = None           # peak adverse excursion in R-multiples
+    mfe_price: Optional[float] = None       # price at peak MFE
+    mae_price: Optional[float] = None       # price at peak MAE
+
+    # Exit efficiency (B9) - actual_pnl_r / mfe_r
+    exit_efficiency: Optional[float] = None
+
+    # Per-order fill detail (G6)
+    entry_fill_details: Optional[dict] = None
+    exit_fill_details: Optional[dict] = None
+
+    # Order book depth at entry (G7)
+    order_book_depth_at_entry: Optional[dict] = None
+
+    # Market conditions at entry (G8)
+    market_conditions_at_entry: Optional[dict] = None
+
     # Execution quality
     expected_entry_price: Optional[float] = None
     entry_slippage_bps: Optional[float] = None
@@ -97,6 +119,10 @@ class TradeEvent:
     exit_slippage_bps: Optional[float] = None
     entry_latency_ms: Optional[int] = None
     exit_latency_ms: Optional[int] = None
+
+    # Experiment tracking (G5, B11)
+    experiment_id: Optional[str] = None
+    experiment_variant: Optional[str] = None
 
     # Event stage
     stage: str = "entry"
@@ -124,6 +150,8 @@ class TradeLogger:
         self.data_source_id = config.get("data_source_id", "ibkr_cme_nq")
         self.process_scorer = process_scorer
         self.strategy_type = strategy_type or config.get("strategy_type", "unknown")
+        self.experiment_id = config.get("experiment_id")
+        self.experiment_variant = config.get("experiment_variant")
         self._open_trades: Dict[str, TradeEvent] = {}
         self._pending_exit_backfills: list[dict] = []
 
@@ -146,6 +174,7 @@ class TradeLogger:
         entry_latency_ms: Optional[int] = None,
         market_regime: str = "",
         bar_id: Optional[str] = None,
+        portfolio_state: Optional[dict] = None,
     ) -> TradeEvent:
         """Call this immediately after a trade entry is confirmed."""
         try:
@@ -192,6 +221,9 @@ class TradeLogger:
                 expected_entry_price=expected_entry_price,
                 entry_slippage_bps=round(entry_slippage_bps, 2) if entry_slippage_bps else None,
                 entry_latency_ms=entry_latency_ms,
+                portfolio_state_at_entry=portfolio_state,
+                experiment_id=self.experiment_id,
+                experiment_variant=self.experiment_variant,
                 stage="entry",
             )
 
@@ -212,6 +244,10 @@ class TradeLogger:
         exchange_timestamp: Optional[datetime] = None,
         expected_exit_price: Optional[float] = None,
         exit_latency_ms: Optional[int] = None,
+        mfe_r: Optional[float] = None,
+        mae_r: Optional[float] = None,
+        mfe_price: Optional[float] = None,
+        mae_price: Optional[float] = None,
     ) -> Optional[TradeEvent]:
         """Call this immediately after a trade exit is confirmed."""
         try:
@@ -247,6 +283,24 @@ class TradeLogger:
             trade.expected_exit_price = expected_exit_price
             trade.exit_slippage_bps = round(exit_slippage_bps, 2) if exit_slippage_bps else None
             trade.exit_latency_ms = exit_latency_ms
+
+            # MFE/MAE fields (Gap G1, B5)
+            trade.mfe_r = round(mfe_r, 4) if mfe_r is not None else None
+            trade.mae_r = round(mae_r, 4) if mae_r is not None else None
+            trade.mfe_price = mfe_price
+            trade.mae_price = mae_price
+
+            # Compute exit efficiency (B9): actual_pnl_r / mfe_r
+            if mfe_r and mfe_r > 0 and trade.entry_price and trade.entry_price > 0:
+                stop0 = (trade.strategy_params_at_entry or {}).get("stop0", trade.entry_price)
+                risk_per_unit = abs(trade.entry_price - stop0)
+                if risk_per_unit > 0:
+                    if trade.side == "LONG":
+                        actual_r = (exit_price - trade.entry_price) / risk_per_unit
+                    else:
+                        actual_r = (trade.entry_price - exit_price) / risk_per_unit
+                    trade.exit_efficiency = round(actual_r / mfe_r, 4)
+
             trade.stage = "exit"
 
             trade.event_metadata = create_event_metadata(
