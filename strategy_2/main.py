@@ -5,6 +5,7 @@ import asyncio
 import logging
 import signal
 import sys
+import time
 from pathlib import Path
 
 logger = logging.getLogger("nqdtc")
@@ -111,6 +112,8 @@ async def main() -> None:
     if bootstrap_ctx.has_db:
         from shared.services.heartbeat import emit_heartbeat
 
+        _hb_start_time = time.time()
+
         async def _heartbeat_loop():
             while True:
                 try:
@@ -121,6 +124,18 @@ async def main() -> None:
                     )
                 except Exception as e:
                     logger.warning("Heartbeat failed: %s", e)
+                if instr:
+                    try:
+                        positions_data = engine.get_position_snapshot()
+                        instr.emit_heartbeat(
+                            active_positions=len(positions_data),
+                            open_orders=len(engine._working_orders),
+                            uptime_s=(time.time() - _hb_start_time),
+                            error_count_1h=0,
+                            positions=positions_data,
+                        )
+                    except Exception:
+                        pass
                 await asyncio.sleep(30)
 
         heartbeat_task = asyncio.create_task(_heartbeat_loop())

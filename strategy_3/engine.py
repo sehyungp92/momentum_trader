@@ -253,7 +253,8 @@ class VdubNQv4Engine:
     # ------------------------------------------------------------------
 
     def _log_missed(self, direction, signal_type, signal_id: str, blocked_by: str,
-                    block_reason: str, signal_strength: float = 0.5, **extra):
+                    block_reason: str, signal_strength: float = 0.5,
+                    filter_decisions: list[dict] | None = None, **extra):
         if not self._kit.active:
             return
         try:
@@ -263,6 +264,7 @@ class VdubNQv4Engine:
                 signal=signal_type.value if hasattr(signal_type, 'value') else str(signal_type),
                 signal_id=signal_id, signal_strength=signal_strength,
                 blocked_by=blocked_by, block_reason=block_reason,
+                filter_decisions=filter_decisions,
                 strategy_params={"daily_trend": self.regime.daily_trend, **extra},
                 concurrent_positions=len(self.positions),
                 drawdown_pct=getattr(self._throttle, 'dd_pct', None),
@@ -284,6 +286,28 @@ class VdubNQv4Engine:
         await self._load_initial_bars()
         self._cycle_task = asyncio.create_task(self._15m_scheduler())
         logger.info("Engine started")
+
+    def get_position_snapshot(self) -> list[dict]:
+        """Return current position state for heartbeat emission."""
+        result = []
+        inst = self._instruments.get("NQ")
+        pv = inst.point_value if inst else 5.0
+        for pos in self.positions:
+            if pos.qty_open <= 0:
+                continue
+            d = 1 if pos.direction == Direction.LONG else -1
+            ur = 0.0
+            if pos.r_points > 0:
+                last = self._bars_15m.get("close", np.array([0]))[-1] if hasattr(self, '_bars_15m') else 0
+                ur = (last - pos.entry_price) * d / pos.r_points if pos.r_points > 0 else 0
+            result.append({
+                "strategy_type": "vdubus",
+                "direction": "LONG" if pos.direction == Direction.LONG else "SHORT",
+                "entry_price": pos.entry_price,
+                "qty": pos.qty_open,
+                "unrealized_pnl_r": round(ur, 3),
+            })
+        return result
 
     async def stop(self) -> None:
         logger.info("Engine stopping")

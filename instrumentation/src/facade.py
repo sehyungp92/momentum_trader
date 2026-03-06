@@ -8,8 +8,10 @@ Usage in strategy engine:
 """
 from __future__ import annotations
 
+import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Optional, List
 
 if TYPE_CHECKING:
@@ -216,3 +218,92 @@ class InstrumentationKit:
             )
         except Exception as e:
             logger.warning("InstrumentationKit.log_missed failed: %s", e)
+
+    def on_order_event(
+        self,
+        order_id: str,
+        pair: str,
+        side: str,
+        order_type: str,
+        status: str,
+        requested_qty: float,
+        filled_qty: float = 0.0,
+        requested_price: float | None = None,
+        fill_price: float | None = None,
+        reject_reason: str = "",
+        latency_ms: float | None = None,
+        related_trade_id: str = "",
+        strategy_type: str = "",
+        session: str = "",
+        contract_month: str = "",
+        order_book_depth: dict | None = None,
+        exchange_timestamp=None,
+        bar_id: str | None = None,
+    ) -> None:
+        """Record an order lifecycle event. Fire-and-forget."""
+        if not self._mgr:
+            return
+        try:
+            self._mgr.order_logger.log_order(
+                order_id=order_id,
+                pair=pair,
+                side=side,
+                order_type=order_type,
+                status=status,
+                requested_qty=requested_qty,
+                filled_qty=filled_qty,
+                requested_price=requested_price,
+                fill_price=fill_price,
+                reject_reason=reject_reason,
+                latency_ms=latency_ms,
+                related_trade_id=related_trade_id,
+                strategy_type=strategy_type or self._strategy_type,
+                session=session,
+                contract_month=contract_month,
+                order_book_depth=order_book_depth,
+                exchange_timestamp=exchange_timestamp,
+                bar_id=bar_id,
+            )
+        except Exception:
+            pass  # instrumentation must never affect trading
+
+    def emit_heartbeat(
+        self,
+        active_positions: int,
+        open_orders: int,
+        uptime_s: float,
+        error_count_1h: int,
+        positions: list[dict] | None = None,
+        portfolio_exposure: dict | None = None,
+    ) -> None:
+        """Emit a heartbeat event with optional position state."""
+        if not self._mgr:
+            return
+        try:
+            heartbeat_data = {
+                "bot_id": self._mgr.bot_id if hasattr(self._mgr, 'bot_id') else
+                    getattr(self._mgr, '_strategy_id', ''),
+                "strategy_type": self._strategy_type,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "active_positions": active_positions,
+                "open_orders": open_orders,
+                "uptime_s": uptime_s,
+                "error_count_1h": error_count_1h,
+                "positions": positions or [],
+                "portfolio_exposure": portfolio_exposure or {},
+            }
+
+            # Include sidecar diagnostics if available
+            diag = self._mgr.get_sidecar_diagnostics()
+            if diag:
+                heartbeat_data["sidecar"] = diag
+
+            data_dir = Path(self._mgr._config.get("data_dir", "instrumentation/data"))
+            hb_dir = data_dir / "heartbeats"
+            hb_dir.mkdir(parents=True, exist_ok=True)
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            filepath = hb_dir / f"heartbeat_{today}.jsonl"
+            with open(filepath, "a", encoding="utf-8") as f:
+                f.write(json.dumps(heartbeat_data, default=str) + "\n")
+        except Exception:
+            pass  # instrumentation must never affect trading

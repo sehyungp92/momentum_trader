@@ -52,6 +52,9 @@ class DailySnapshot:
 
     per_strategy_summary: Dict[str, dict] = field(default_factory=dict)
 
+    experiment_breakdown: Dict[str, dict] = field(default_factory=dict)
+    active_experiments: Dict[str, dict] = field(default_factory=dict)
+
     avg_entry_slippage_bps: Optional[float] = None
     avg_exit_slippage_bps: Optional[float] = None
     avg_entry_latency_ms: Optional[float] = None
@@ -75,10 +78,11 @@ class DailySnapshotBuilder:
         builder.save(snapshot)
     """
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, experiment_registry=None):
         self.bot_id = config["bot_id"]
         self.strategy_type = config.get("strategy_type", "unknown")
         self.data_dir = Path(config["data_dir"])
+        self._experiment_registry = experiment_registry
 
     def build(self, date_str: str = None) -> DailySnapshot:
         if date_str is None:
@@ -180,7 +184,74 @@ class DailySnapshotBuilder:
         # --- ERRORS ---
         snapshot.error_count = len(errors)
 
+        # --- EXPERIMENT BREAKDOWN ---
+        snapshot.experiment_breakdown = self._build_experiment_breakdown(completed)
+
+        if self._experiment_registry:
+            try:
+                snapshot.active_experiments = self._experiment_registry.export_active(
+                    as_of=date_str
+                )
+            except Exception:
+                pass
+
         return snapshot
+
+    @staticmethod
+    def _build_experiment_breakdown(completed_trades: list) -> dict:
+        """Group completed trades by experiment_id:experiment_variant."""
+        groups: dict[str, list[dict]] = {}
+        for t in completed_trades:
+            exp_id = t.get("experiment_id") or ""
+            exp_var = t.get("experiment_variant") or ""
+            if not exp_id:
+                continue
+            key = f"{exp_id}:{exp_var}"
+            groups.setdefault(key, []).append(t)
+
+        breakdown = {}
+        for key, trades in groups.items():
+            exp_id, exp_var = key.split(":", 1)
+            wins = [t for t in trades if (t.get("pnl") or 0) > 0]
+            losses = [t for t in trades if (t.get("pnl") or 0) < 0]
+            gross_pnl = sum(t.get("pnl", 0) + (t.get("fees_paid", 0) or 0) for t in trades)
+            net_pnl = sum(t.get("pnl", 0) for t in trades)
+            scores = [t.get("process_quality_score", 0) for t in trades
+                      if t.get("process_quality_score") is not None]
+            slippage_vals = [t["entry_slippage_bps"] for t in trades
+                             if t.get("entry_slippage_bps") is not None]
+
+            strategy_types = [t.get("strategy_type", "") for t in trades if t.get("strategy_type")]
+            param_set_ids = [t.get("param_set_id", "") for t in trades if t.get("param_set_id")]
+
+            breakdown[key] = {
+                "experiment_id": exp_id,
+                "experiment_variant": exp_var,
+                "trades": len(trades),
+                "win_count": len(wins),
+                "loss_count": len(losses),
+                "gross_pnl": round(gross_pnl, 2),
+                "net_pnl": round(net_pnl, 2),
+                "win_rate": round(len(wins) / len(trades), 4) if trades else 0.0,
+                "avg_win": round(
+                    sum(t["pnl"] for t in wins) / len(wins), 2
+                ) if wins else 0.0,
+                "avg_loss": round(
+                    sum(t["pnl"] for t in losses) / len(losses), 2
+                ) if losses else 0.0,
+                "avg_process_quality": round(
+                    sum(scores) / len(scores), 1
+                ) if scores else 0.0,
+                "strategy_type": max(set(strategy_types), key=strategy_types.count)
+                    if strategy_types else "",
+                "param_set_id": param_set_ids[0] if len(set(param_set_ids)) == 1
+                    else "",
+                "avg_slippage_bps": round(
+                    sum(slippage_vals) / len(slippage_vals), 2
+                ) if slippage_vals else None,
+            }
+
+        return breakdown
 
     @staticmethod
     def _compute_trade_stats(completed: list) -> dict:

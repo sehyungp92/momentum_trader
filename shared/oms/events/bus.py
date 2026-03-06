@@ -63,11 +63,22 @@ class EventBus:
         if not event_type:
             return  # No event for intermediate states (CANCEL_REQUESTED, etc.)
 
+        payload = {
+            "symbol": order.instrument.symbol if order.instrument else "",
+            "side": order.side.value if order.side else "",
+            "order_type": order.order_type.value if order.order_type else "",
+            "role": order.role.value if order.role else "",
+            "qty": order.qty,
+            "limit_price": order.limit_price,
+            "stop_price": order.stop_price,
+            "rejection_reason": getattr(order, "rejection_reason", ""),
+        }
         event = OMSEvent(
             event_type=event_type,
             timestamp=order.last_update_at or order.created_at or datetime.now(timezone.utc),
             strategy_id=order.strategy_id,
             oms_order_id=order.oms_order_id,
+            payload=payload,
         )
         self._dispatch(event)
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -84,6 +84,30 @@ class ExperimentRegistry:
                 if exp.end_date is None or exp.end_date >= ref:
                     result.append(exp)
         return result
+
+    def export_active(self, as_of: str | None = None) -> dict:
+        """Export active experiment metadata for downstream consumption.
+
+        Returns dict keyed by experiment_id with hypothesis, variants, and metrics.
+        Suitable for inclusion in DailySnapshot.active_experiments.
+        """
+        active = self.active_experiments(as_of=as_of)
+        ref = as_of or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        return {
+            exp.experiment_id: {
+                "hypothesis": exp.hypothesis,
+                "variants": exp.variants,
+                "primary_metric": exp.primary_metric,
+                "secondary_metrics": exp.secondary_metrics,
+                "start_date": exp.start_date,
+                "end_date": exp.end_date,
+                "min_trades_per_variant": exp.min_trades_per_variant,
+                "strategy_type": exp.strategy_type,
+                "status": "active" if exp.end_date is None or exp.end_date >= ref
+                    else "concluded",
+            }
+            for exp in active
+        }
 
     def all_experiments(self) -> list[ExperimentMetadata]:
         return list(self._experiments.values())

@@ -23,6 +23,9 @@ _DIR_TO_EVENT_TYPE = {
     "errors": "error",
     "scores": "process_quality",
     "daily": "daily_snapshot",
+    "orders": "order",
+    "heartbeats": "heartbeat",
+    "portfolio_rules": "portfolio_rule",
 }
 
 # Event priority for sorting (#25): lower number = higher priority
@@ -31,7 +34,10 @@ _EVENT_PRIORITY = {
     "daily_snapshot": 1,
     "trade": 2,
     "missed_opportunity": 3,
+    "order": 3,
+    "portfolio_rule": 3,
     "process_quality": 4,
+    "heartbeat": 5,
 }
 
 

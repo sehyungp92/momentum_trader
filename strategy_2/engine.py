@@ -256,6 +256,25 @@ class NQDTCEngine:
         self._cycle_task = asyncio.create_task(self._5m_scheduler())
         logger.info("NQDTC engine started (symbol=%s)", self._symbol)
 
+    def get_position_snapshot(self) -> list[dict]:
+        """Return current position state for heartbeat emission."""
+        if not self._position.open:
+            return []
+        r_pts = abs(self._position.entry_price - self._position.initial_stop_price)
+        if self._position.direction == Direction.LONG:
+            last = self._bars_5m.get("close", np.array([0]))[-1]
+            ur = (last - self._position.entry_price) / r_pts if r_pts > 0 else 0
+        else:
+            last = self._bars_5m.get("close", np.array([0]))[-1]
+            ur = (self._position.entry_price - last) / r_pts if r_pts > 0 else 0
+        return [{
+            "strategy_type": "nqdtc",
+            "direction": "LONG" if self._position.direction == Direction.LONG else "SHORT",
+            "entry_price": self._position.entry_price,
+            "qty": self._position.qty_open,
+            "unrealized_pnl_r": round(ur, 3),
+        }]
+
     async def stop(self) -> None:
         logger.info("NQDTC engine stopping …")
         self._running = False
@@ -1001,7 +1020,8 @@ class NQDTCEngine:
                 elif (subtype == EntrySubtype.C_CONTINUATION
                         and engine.breakout.last_trade_peak_r < C.C_CONT_MFE_GATE_R):
                     blocked = True
-                    self._log_missed(direction, subtype.value, _c_sig_id, "C_CONT_MFE_GATE", f"peak_r={engine.breakout.last_trade_peak_r:.2f}")
+                    self._log_missed(direction, subtype.value, _c_sig_id, "C_CONT_MFE_GATE", f"peak_r={engine.breakout.last_trade_peak_r:.2f}",
+                                    filter_decisions=[{"filter_name": "C_CONT_MFE_GATE", "threshold": C.C_CONT_MFE_GATE_R, "actual_value": engine.breakout.last_trade_peak_r, "passed": False}])
                 elif (C.BLOCK_CONT_ALIGNED
                         and subtype == EntrySubtype.C_CONTINUATION
                         and self._regime.composite == CompositeRegime.ALIGNED):
@@ -1012,7 +1032,8 @@ class NQDTCEngine:
                         and self._regime.composite == CompositeRegime.NEUTRAL
                         and disp_norm < 0.5):
                     blocked = True
-                    self._log_missed(direction, subtype.value, _c_sig_id, "C_STD_NEUTRAL_LOW_DISP", f"disp_norm={disp_norm:.2f}")
+                    self._log_missed(direction, subtype.value, _c_sig_id, "C_STD_NEUTRAL_LOW_DISP", f"disp_norm={disp_norm:.2f}",
+                                    filter_decisions=[{"filter_name": "C_STD_NEUTRAL_LOW_DISP", "threshold": 0.5, "actual_value": disp_norm, "passed": False}])
                 if not blocked:
                     await self._place_entry_c(
                         engine, direction, hold_ref, vwap_val,
@@ -1901,19 +1922,22 @@ class NQDTCEngine:
         MIN_STOP_DISTANCE = 3.0
         if r_points < MIN_STOP_DISTANCE:
             logger.info("Min stop gate: stop_dist=%.2f < %.1f, rejecting fill", r_points, MIN_STOP_DISTANCE)
-            self._log_missed(wo.direction, wo.subtype.value, oms_id, "MIN_STOP_DISTANCE", f"r={r_points:.2f}", signal_strength=wo.quality_mult)
+            self._log_missed(wo.direction, wo.subtype.value, oms_id, "MIN_STOP_DISTANCE", f"r={r_points:.2f}", signal_strength=wo.quality_mult,
+                            filter_decisions=[{"filter_name": "MIN_STOP_DISTANCE", "threshold": MIN_STOP_DISTANCE, "actual_value": r_points, "passed": False}])
             return
 
         # Block fills during 06:00 ET hour (pre-European-open, WR=39%)
         if C.BLOCK_06_ET and now_ny.hour == 6:
             logger.info("06:00 ET fill block: rejecting entry fill at %s", now_ny.strftime("%H:%M"))
-            self._log_missed(wo.direction, wo.subtype.value, oms_id, "BLOCK_06_ET", "fill at 06:xx ET", signal_strength=wo.quality_mult)
+            self._log_missed(wo.direction, wo.subtype.value, oms_id, "BLOCK_06_ET", "fill at 06:xx ET", signal_strength=wo.quality_mult,
+                            filter_decisions=[{"filter_name": "BLOCK_06_ET", "threshold": 6, "actual_value": now_ny.hour, "passed": False}])
             return
 
         # Block fills during 12:00 ET hour (17% WR, outlier-dependent)
         if C.BLOCK_12_ET and now_ny.hour == 12:
             logger.info("12:00 ET fill block: rejecting entry fill at %s", now_ny.strftime("%H:%M"))
-            self._log_missed(wo.direction, wo.subtype.value, oms_id, "BLOCK_12_ET", "fill at 12:xx ET", signal_strength=wo.quality_mult)
+            self._log_missed(wo.direction, wo.subtype.value, oms_id, "BLOCK_12_ET", "fill at 12:xx ET", signal_strength=wo.quality_mult,
+                            filter_decisions=[{"filter_name": "BLOCK_12_ET", "threshold": 12, "actual_value": now_ny.hour, "passed": False}])
             return
 
         # Determine exit tier using actual quality_mult from working order (fix #5)
@@ -2246,7 +2270,8 @@ class NQDTCEngine:
     # ------------------------------------------------------------------
 
     def _log_missed(self, direction, signal: str, signal_id: str, blocked_by: str,
-                    block_reason: str, signal_strength: float = 0.5, **extra):
+                    block_reason: str, signal_strength: float = 0.5,
+                    filter_decisions: list[dict] | None = None, **extra):
         if not self._kit.active:
             return
         try:
@@ -2256,6 +2281,7 @@ class NQDTCEngine:
                 signal=signal, signal_id=signal_id,
                 signal_strength=signal_strength,
                 blocked_by=blocked_by, block_reason=block_reason,
+                filter_decisions=filter_decisions,
                 strategy_params={"composite": self._regime.composite.value
                                  if self._regime.composite else "", **extra},
                 concurrent_positions=1 if self._position.open else 0,

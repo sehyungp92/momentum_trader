@@ -21,6 +21,7 @@ from .daily_snapshot import DailySnapshotBuilder
 from .regime_classifier import RegimeClassifier
 from .sidecar import Sidecar
 from .experiment import ExperimentRegistry
+from .order_logger import OrderLogger
 
 logger = logging.getLogger("instrumentation.bootstrap")
 
@@ -77,10 +78,11 @@ class InstrumentationManager:
             strategy_type=strategy_type,
         )
         self.missed_logger = MissedOpportunityLogger(self._config, self.snapshot_service)
-        self.daily_builder = DailySnapshotBuilder(self._config)
+        self.order_logger = OrderLogger(self._config, strategy_type=strategy_type)
+        self.experiment_registry = ExperimentRegistry()
+        self.daily_builder = DailySnapshotBuilder(self._config, experiment_registry=self.experiment_registry)
         self.regime_classifier = RegimeClassifier(data_provider=data_provider)
         self.sidecar = Sidecar(self._config)
-        self.experiment_registry = ExperimentRegistry()
 
         self._event_queue: Optional[asyncio.Queue] = None
         self._event_task: Optional[asyncio.Task] = None
@@ -93,6 +95,26 @@ class InstrumentationManager:
             return self.sidecar.get_diagnostics()
         except Exception:
             return None
+
+    def emit_heartbeat(
+        self,
+        active_positions: int,
+        open_orders: int,
+        uptime_s: float,
+        error_count_1h: int,
+        positions: Optional[list] = None,
+        portfolio_exposure: Optional[dict] = None,
+    ) -> None:
+        """Proxy to facade kit for heartbeat emission with position state."""
+        try:
+            from .facade import InstrumentationKit
+            kit = InstrumentationKit(self, strategy_type=self._config.get("strategy_type", ""))
+            kit.emit_heartbeat(
+                active_positions, open_orders, uptime_s, error_count_1h,
+                positions=positions, portfolio_exposure=portfolio_exposure,
+            )
+        except Exception:
+            pass
 
     async def start(self) -> None:
         """Subscribe to OMS events and start background tasks."""
@@ -156,9 +178,20 @@ class InstrumentationManager:
 
         logger.info("Instrumentation stopped for %s", self._strategy_id)
 
+    _ORDER_STATUS_MAP = None  # lazily initialised
+
     async def _event_loop(self) -> None:
-        """Process OMS events — logs RISK_DENIAL as missed opportunities."""
+        """Process OMS events — logs RISK_DENIAL, order status, and fills."""
         from shared.oms.models.events import OMSEventType
+
+        if InstrumentationManager._ORDER_STATUS_MAP is None:
+            InstrumentationManager._ORDER_STATUS_MAP = {
+                OMSEventType.ORDER_FILLED: "FILLED",
+                OMSEventType.ORDER_PARTIALLY_FILLED: "PARTIAL_FILL",
+                OMSEventType.ORDER_REJECTED: "REJECTED",
+                OMSEventType.ORDER_CANCELLED: "CANCELLED",
+                OMSEventType.ORDER_EXPIRED: "EXPIRED",
+            }
 
         while self._running:
             try:
@@ -171,6 +204,10 @@ class InstrumentationManager:
             try:
                 if event.event_type == OMSEventType.RISK_DENIAL:
                     self._handle_risk_denial(event)
+                elif event.event_type in self._ORDER_STATUS_MAP:
+                    self._handle_order_status(event, self._ORDER_STATUS_MAP[event.event_type])
+                elif event.event_type == OMSEventType.FILL:
+                    self._handle_fill_event(event)
             except Exception as e:
                 logger.warning("Error processing OMS event: %s", e)
 
@@ -200,6 +237,43 @@ class InstrumentationManager:
             )
         except Exception as e:
             logger.warning("Failed to log risk denial as missed: %s", e)
+
+    def _handle_order_status(self, event, status_label: str) -> None:
+        """Log order status transitions (FILLED, REJECTED, CANCELLED, etc.)."""
+        try:
+            payload = event.payload or {}
+            self.order_logger.log_order(
+                order_id=event.oms_order_id or "",
+                pair=payload.get("symbol", "NQ"),
+                side=payload.get("side", ""),
+                order_type=payload.get("order_type", ""),
+                status=status_label,
+                requested_qty=payload.get("qty", 0),
+                reject_reason=payload.get("rejection_reason", ""),
+                strategy_type=self._config.get("strategy_type", ""),
+                exchange_timestamp=event.timestamp,
+            )
+        except Exception as e:
+            logger.warning("Failed to log order status %s: %s", status_label, e)
+
+    def _handle_fill_event(self, event) -> None:
+        """Log fill events with execution details."""
+        try:
+            payload = event.payload or {}
+            self.order_logger.log_order(
+                order_id=event.oms_order_id or "",
+                pair=payload.get("symbol", "NQ"),
+                side=payload.get("side", ""),
+                order_type=payload.get("order_type", ""),
+                status="FILL",
+                requested_qty=payload.get("requested_qty", 0),
+                filled_qty=payload.get("qty", 0),
+                fill_price=payload.get("price"),
+                strategy_type=self._config.get("strategy_type", ""),
+                exchange_timestamp=event.timestamp,
+            )
+        except Exception as e:
+            logger.warning("Failed to log fill event: %s", e)
 
     async def _periodic_snapshot_loop(self, interval: int) -> None:
         """Capture market snapshots at regular intervals."""

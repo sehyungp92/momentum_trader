@@ -1,6 +1,9 @@
 """OMS factory for proper initialization with all dependencies."""
+import json
 import logging
-from typing import Optional
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Callable, Optional
 
 import asyncpg
 
@@ -20,6 +23,24 @@ from ..risk.gateway import RiskGateway
 from .oms_service import OMSService
 
 logger = logging.getLogger(__name__)
+
+
+def _make_portfolio_rule_logger(data_dir: str = "instrumentation/data") -> Callable:
+    """Create a JSONL-writing callback for portfolio rule events."""
+    rule_dir = Path(data_dir) / "portfolio_rules"
+    rule_dir.mkdir(parents=True, exist_ok=True)
+
+    def _log_rule(event: dict) -> None:
+        try:
+            event["timestamp"] = datetime.now(timezone.utc).isoformat()
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            path = rule_dir / f"rules_{today}.jsonl"
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(event, default=str) + "\n")
+        except Exception:
+            pass
+
+    return _log_rule
 
 
 async def build_oms_service(
@@ -142,6 +163,7 @@ async def build_oms_service(
             get_strategy_signal=_pg.get_strategy_signal,
             get_directional_risk_R=_pg.get_directional_risk_R,
             get_current_equity=get_current_equity or (lambda: 10_000.0),
+            on_rule_event=_make_portfolio_rule_logger(),
         )
         logger.info("Portfolio rules enabled for %s", strategy_id)
 
@@ -351,6 +373,11 @@ def _wire_adapter_callbacks(
                 "timestamp": timestamp.isoformat() if hasattr(timestamp, 'isoformat') else str(timestamp),
                 "commission": commission,
                 "client_order_id": getattr(order, 'client_order_id', ""),
+                "symbol": order.instrument.symbol if order.instrument else "",
+                "side": order.side.value if order.side else "",
+                "order_type": order.order_type.value if order.order_type else "",
+                "role": order.role.value if order.role else "",
+                "requested_qty": order.qty,
             }
             bus.emit_fill_event(order.strategy_id, oms_order_id, fill_data)
 

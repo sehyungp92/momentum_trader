@@ -234,6 +234,23 @@ class Helix4Engine:
         self._timer_task = asyncio.create_task(self._session_timer())
         logger.info("Helix4Engine started (event-driven)")
 
+    def get_position_snapshot(self) -> list[dict]:
+        """Return current position state for heartbeat emission."""
+        result = []
+        for pos in self.positions.positions:
+            result.append({
+                "strategy_type": "helix",
+                "direction": "LONG" if pos.direction == 1 else "SHORT",
+                "entry_price": pos.avg_entry,
+                "qty": pos.contracts,
+                "unrealized_pnl_r": round(
+                    (self.h1.close[-1] - pos.avg_entry) * pos.direction
+                    * self.nq_inst.point_value * pos.contracts
+                    / max(pos.unit1_risk_usd, 1e-9), 3
+                ) if len(self.h1.close) > 0 else 0.0,
+            })
+        return result
+
     async def stop(self) -> None:
         self._running = False
         for bars in self._bar_streams.values():
