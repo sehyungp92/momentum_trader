@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 from dataclasses import dataclass, asdict, field
@@ -124,6 +125,10 @@ class TradeEvent:
     experiment_id: Optional[str] = None
     experiment_variant: Optional[str] = None
 
+    # Strategy identification
+    strategy_type: str = ""              # "helix" / "nqdtc" / "vdubus"
+    param_set_id: Optional[str] = None   # sha256[:16] of strategy_params for grouping
+
     # Event stage
     stage: str = "entry"
 
@@ -224,8 +229,14 @@ class TradeLogger:
                 portfolio_state_at_entry=portfolio_state,
                 experiment_id=self.experiment_id,
                 experiment_variant=self.experiment_variant,
+                strategy_type=self.strategy_type,
                 stage="entry",
             )
+
+            # Compute param_set_id hash for efficient grouping
+            if strategy_params:
+                params_str = json.dumps(strategy_params, sort_keys=True, default=str)
+                trade.param_set_id = hashlib.sha256(params_str.encode()).hexdigest()[:16]
 
             self._open_trades[trade_id] = trade
             self._write_event(trade)

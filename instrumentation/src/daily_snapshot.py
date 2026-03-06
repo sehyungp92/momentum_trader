@@ -50,6 +50,8 @@ class DailySnapshot:
 
     regime_breakdown: Dict[str, dict] = field(default_factory=dict)
 
+    per_strategy_summary: Dict[str, dict] = field(default_factory=dict)
+
     avg_entry_slippage_bps: Optional[float] = None
     avg_exit_slippage_bps: Optional[float] = None
     avg_entry_latency_ms: Optional[float] = None
@@ -98,34 +100,22 @@ class DailySnapshotBuilder:
         snapshot.total_trades = len(completed)
 
         if completed:
-            pnls = [t["pnl"] for t in completed]
-            fees = [t.get("fees_paid", 0) or 0 for t in completed]
-            wins = [p for p in pnls if p > 0]
-            losses = [p for p in pnls if p < 0]
-
-            snapshot.win_count = len(wins)
-            snapshot.loss_count = len(losses)
-            snapshot.breakeven_count = len([p for p in pnls if p == 0])
-            snapshot.gross_pnl = round(sum(pnls) + sum(fees), 4)
-            snapshot.net_pnl = round(sum(pnls), 4)
-            snapshot.total_fees = round(sum(fees), 4)
-            snapshot.best_trade_pnl = round(max(pnls), 4)
-            snapshot.worst_trade_pnl = round(min(pnls), 4)
-            snapshot.avg_win = round(sum(wins) / len(wins), 4) if wins else 0
-            snapshot.avg_loss = round(sum(losses) / len(losses), 4) if losses else 0
-            snapshot.win_rate = round(len(wins) / len(completed), 4) if completed else 0
-
-            gross_wins = sum(wins) if wins else 0
-            gross_losses = abs(sum(losses)) if losses else 0
-            snapshot.profit_factor = round(gross_wins / gross_losses, 4) if gross_losses > 0 else float('inf')
-
-            entry_slips = [t.get("entry_slippage_bps") for t in completed if t.get("entry_slippage_bps") is not None]
-            exit_slips = [t.get("exit_slippage_bps") for t in completed if t.get("exit_slippage_bps") is not None]
-            latencies = [t.get("entry_latency_ms") for t in completed if t.get("entry_latency_ms") is not None]
-
-            snapshot.avg_entry_slippage_bps = round(sum(entry_slips) / len(entry_slips), 2) if entry_slips else None
-            snapshot.avg_exit_slippage_bps = round(sum(exit_slips) / len(exit_slips), 2) if exit_slips else None
-            snapshot.avg_entry_latency_ms = round(sum(latencies) / len(latencies), 1) if latencies else None
+            stats = self._compute_trade_stats(completed)
+            snapshot.win_count = stats["win_count"]
+            snapshot.loss_count = stats["loss_count"]
+            snapshot.breakeven_count = stats["breakeven_count"]
+            snapshot.gross_pnl = stats["gross_pnl"]
+            snapshot.net_pnl = stats["net_pnl"]
+            snapshot.total_fees = stats["total_fees"]
+            snapshot.best_trade_pnl = stats["best_trade_pnl"]
+            snapshot.worst_trade_pnl = stats["worst_trade_pnl"]
+            snapshot.avg_win = stats["avg_win"]
+            snapshot.avg_loss = stats["avg_loss"]
+            snapshot.win_rate = stats["win_rate"]
+            snapshot.profit_factor = stats["profit_factor"]
+            snapshot.avg_entry_slippage_bps = stats["avg_entry_slippage_bps"]
+            snapshot.avg_exit_slippage_bps = stats["avg_exit_slippage_bps"]
+            snapshot.avg_entry_latency_ms = stats["avg_entry_latency_ms"]
 
             regime_data = {}
             for t in completed:
@@ -140,6 +130,27 @@ class DailySnapshotBuilder:
                 data["pnl"] = round(data["pnl"], 4)
                 data["win_rate"] = round(data["wins"] / data["trades"], 4) if data["trades"] > 0 else 0
             snapshot.regime_breakdown = regime_data
+
+            # --- PER-STRATEGY SUMMARY ---
+            by_strategy = {}
+            for t in completed:
+                st = t.get("strategy_type") or self.strategy_type
+                by_strategy.setdefault(st, []).append(t)
+            for st, st_trades in by_strategy.items():
+                s = self._compute_trade_stats(st_trades)
+                snapshot.per_strategy_summary[st] = {
+                    "trades": len(st_trades),
+                    "win_count": s["win_count"],
+                    "loss_count": s["loss_count"],
+                    "gross_pnl": s["gross_pnl"],
+                    "net_pnl": s["net_pnl"],
+                    "win_rate": s["win_rate"],
+                    "avg_win": s["avg_win"],
+                    "avg_loss": s["avg_loss"],
+                    "best_trade_pnl": s["best_trade_pnl"],
+                    "worst_trade_pnl": s["worst_trade_pnl"],
+                    "avg_entry_slippage_bps": s["avg_entry_slippage_bps"],
+                }
 
         # --- MISSED OPPORTUNITIES ---
         snapshot.missed_count = len(missed)
@@ -170,6 +181,39 @@ class DailySnapshotBuilder:
         snapshot.error_count = len(errors)
 
         return snapshot
+
+    @staticmethod
+    def _compute_trade_stats(completed: list) -> dict:
+        """Compute core trade stats from a list of completed trade dicts."""
+        pnls = [t["pnl"] for t in completed]
+        fees = [t.get("fees_paid", 0) or 0 for t in completed]
+        wins = [p for p in pnls if p > 0]
+        losses = [p for p in pnls if p < 0]
+
+        gross_wins = sum(wins) if wins else 0
+        gross_losses = abs(sum(losses)) if losses else 0
+
+        entry_slips = [t.get("entry_slippage_bps") for t in completed if t.get("entry_slippage_bps") is not None]
+        exit_slips = [t.get("exit_slippage_bps") for t in completed if t.get("exit_slippage_bps") is not None]
+        latencies = [t.get("entry_latency_ms") for t in completed if t.get("entry_latency_ms") is not None]
+
+        return {
+            "win_count": len(wins),
+            "loss_count": len(losses),
+            "breakeven_count": len([p for p in pnls if p == 0]),
+            "gross_pnl": round(sum(pnls) + sum(fees), 4),
+            "net_pnl": round(sum(pnls), 4),
+            "total_fees": round(sum(fees), 4),
+            "best_trade_pnl": round(max(pnls), 4),
+            "worst_trade_pnl": round(min(pnls), 4),
+            "avg_win": round(sum(wins) / len(wins), 4) if wins else 0,
+            "avg_loss": round(sum(losses) / len(losses), 4) if losses else 0,
+            "win_rate": round(len(wins) / len(completed), 4) if completed else 0,
+            "profit_factor": round(gross_wins / gross_losses, 4) if gross_losses > 0 else float('inf'),
+            "avg_entry_slippage_bps": round(sum(entry_slips) / len(entry_slips), 2) if entry_slips else None,
+            "avg_exit_slippage_bps": round(sum(exit_slips) / len(exit_slips), 2) if exit_slips else None,
+            "avg_entry_latency_ms": round(sum(latencies) / len(latencies), 1) if latencies else None,
+        }
 
     def save(self, snapshot: DailySnapshot):
         daily_dir = self.data_dir / "daily"

@@ -253,3 +253,42 @@ class TestTradeLogger:
         assert exit_trade.pnl == 100.0
         assert exit_trade.signal_factors == []
         assert exit_trade.post_exit_backfill_status == "pending"
+
+    def test_log_entry_sets_strategy_type(self):
+        logger = TradeLogger(
+            {**self.config, "strategy_type": "helix"},
+            self.snap_service,
+        )
+        trade = logger.log_entry(
+            trade_id="t1", pair="NQ", side="LONG",
+            entry_price=20500, position_size=1.0, position_size_quote=20500,
+            entry_signal="test", entry_signal_id="test",
+            entry_signal_strength=0.8, active_filters=[], passed_filters=[],
+            strategy_params={"trail_mult": 3.0},
+        )
+        assert trade.strategy_type == "helix"
+
+    def test_log_entry_computes_param_set_id(self):
+        import hashlib, json as _json
+        params = {"trail_mult": 3.0, "stop_atr": 1.5}
+        trade = self.logger.log_entry(
+            trade_id="t1", pair="NQ", side="LONG",
+            entry_price=20500, position_size=1.0, position_size_quote=20500,
+            entry_signal="test", entry_signal_id="test",
+            entry_signal_strength=0.8, active_filters=[], passed_filters=[],
+            strategy_params=params,
+        )
+        expected = hashlib.sha256(
+            _json.dumps(params, sort_keys=True, default=str).encode()
+        ).hexdigest()[:16]
+        assert trade.param_set_id == expected
+
+    def test_log_entry_param_set_id_none_when_no_params(self):
+        trade = self.logger.log_entry(
+            trade_id="t1", pair="NQ", side="LONG",
+            entry_price=20500, position_size=1.0, position_size_quote=20500,
+            entry_signal="test", entry_signal_id="test",
+            entry_signal_strength=0.8, active_filters=[], passed_filters=[],
+            strategy_params={},
+        )
+        assert trade.param_set_id is None

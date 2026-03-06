@@ -131,3 +131,64 @@ class TestDailySnapshotBuilder:
         assert isinstance(d, dict)
         assert d["bot_id"] == "test_bot"
         assert d["strategy_type"] == "helix"
+
+    def test_per_strategy_summary_single_strategy(self):
+        self._write_trades([
+            {"stage": "exit", "trade_id": "t1", "pnl": 500, "fees_paid": 10,
+             "strategy_type": "helix", "entry_slippage_bps": 1.5},
+            {"stage": "exit", "trade_id": "t2", "pnl": -200, "fees_paid": 10,
+             "strategy_type": "helix"},
+        ])
+        builder = DailySnapshotBuilder(self.config)
+        snapshot = builder.build(self.date_str)
+        assert "helix" in snapshot.per_strategy_summary
+        s = snapshot.per_strategy_summary["helix"]
+        assert s["trades"] == 2
+        assert s["win_count"] == 1
+        assert s["loss_count"] == 1
+        assert s["net_pnl"] == 300.0
+        assert s["win_rate"] == 0.5
+        assert s["avg_win"] == 500.0
+        assert s["avg_loss"] == -200.0
+        assert s["best_trade_pnl"] == 500.0
+        assert s["worst_trade_pnl"] == -200.0
+        assert s["avg_entry_slippage_bps"] == 1.5
+
+    def test_per_strategy_summary_multi_strategy(self):
+        self._write_trades([
+            {"stage": "exit", "trade_id": "t1", "pnl": 500, "fees_paid": 0,
+             "strategy_type": "helix"},
+            {"stage": "exit", "trade_id": "t2", "pnl": -100, "fees_paid": 0,
+             "strategy_type": "nqdtc"},
+            {"stage": "exit", "trade_id": "t3", "pnl": 300, "fees_paid": 0,
+             "strategy_type": "nqdtc"},
+        ])
+        builder = DailySnapshotBuilder(self.config)
+        snapshot = builder.build(self.date_str)
+        assert len(snapshot.per_strategy_summary) == 2
+        assert snapshot.per_strategy_summary["helix"]["trades"] == 1
+        assert snapshot.per_strategy_summary["helix"]["net_pnl"] == 500.0
+        assert snapshot.per_strategy_summary["nqdtc"]["trades"] == 2
+        assert snapshot.per_strategy_summary["nqdtc"]["net_pnl"] == 200.0
+        assert snapshot.per_strategy_summary["nqdtc"]["win_count"] == 1
+        assert snapshot.per_strategy_summary["nqdtc"]["loss_count"] == 1
+
+    def test_per_strategy_summary_empty(self):
+        builder = DailySnapshotBuilder(self.config)
+        snapshot = builder.build(self.date_str)
+        assert snapshot.per_strategy_summary == {}
+
+    def test_per_strategy_summary_in_saved_json(self):
+        self._write_trades([
+            {"stage": "exit", "trade_id": "t1", "pnl": 400, "fees_paid": 5,
+             "strategy_type": "vdubus"},
+        ])
+        builder = DailySnapshotBuilder(self.config)
+        snapshot = builder.build(self.date_str)
+        builder.save(snapshot)
+        filepath = Path(self.tmpdir) / "daily" / f"daily_{self.date_str}.json"
+        data = json.loads(filepath.read_text())
+        assert "per_strategy_summary" in data
+        assert "vdubus" in data["per_strategy_summary"]
+        assert data["per_strategy_summary"]["vdubus"]["trades"] == 1
+        assert data["per_strategy_summary"]["vdubus"]["net_pnl"] == 400.0
