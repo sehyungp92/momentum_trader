@@ -9,6 +9,9 @@ services:
     command: ["python", "-m", "strategy"]
     env_file:
       - ../.env
+    environment:
+      INSTRUMENTATION_RELAY_URL: "http://host.docker.internal:8001/events"
+      INSTRUMENTATION_HMAC_SECRET: ${INSTRUMENTATION_HMAC_SECRET:-}
     volumes:
       - helix_instrumentation:/app/instrumentation/data
     extra_hosts:
@@ -26,6 +29,9 @@ services:
     command: ["python", "-m", "strategy_2"]
     env_file:
       - ../.env
+    environment:
+      INSTRUMENTATION_RELAY_URL: "http://host.docker.internal:8001/events"
+      INSTRUMENTATION_HMAC_SECRET: ${INSTRUMENTATION_HMAC_SECRET:-}
     volumes:
       - nqdtc_instrumentation:/app/instrumentation/data
     extra_hosts:
@@ -43,6 +49,9 @@ services:
     command: ["python", "-m", "strategy_3"]
     env_file:
       - ../.env
+    environment:
+      INSTRUMENTATION_RELAY_URL: "http://host.docker.internal:8001/events"
+      INSTRUMENTATION_HMAC_SECRET: ${INSTRUMENTATION_HMAC_SECRET:-}
     volumes:
       - vdubus_instrumentation:/app/instrumentation/data
     extra_hosts:
