@@ -73,6 +73,7 @@ class InstrumentationKit:
         exchange_timestamp: Optional[datetime] = None,
         entry_latency_ms: Optional[int] = None,
         signal_evolution: Optional[list[dict]] = None,
+        execution_timestamps: Optional[dict] = None,
     ) -> None:
         if not self._mgr:
             return
@@ -117,6 +118,7 @@ class InstrumentationKit:
                 trade.experiment_id = self._experiment_id
                 trade.experiment_variant = self._experiment_variant
                 trade.signal_evolution = signal_evolution
+                trade.execution_timestamps = execution_timestamps
 
         except Exception as e:
             logger.warning("InstrumentationKit.log_entry failed: %s", e)
@@ -135,6 +137,7 @@ class InstrumentationKit:
         mae_r: Optional[float] = None,
         mfe_price: Optional[float] = None,
         mae_price: Optional[float] = None,
+        session_transitions: Optional[list] = None,
     ) -> None:
         if not self._mgr:
             return
@@ -151,6 +154,7 @@ class InstrumentationKit:
                 mae_r=mae_r,
                 mfe_price=mfe_price,
                 mae_price=mae_price,
+                session_transitions=session_transitions,
             )
         except Exception as e:
             logger.warning("InstrumentationKit.log_exit failed: %s", e)

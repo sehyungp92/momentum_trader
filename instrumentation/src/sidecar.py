@@ -1,3 +1,4 @@
+import gzip
 import hashlib
 import hmac
 import json
@@ -22,6 +23,15 @@ _DIR_TO_EVENT_TYPE = {
     "errors": "error",
     "scores": "process_quality",
     "daily": "daily_snapshot",
+}
+
+# Event priority for sorting (#25): lower number = higher priority
+_EVENT_PRIORITY = {
+    "error": 0,
+    "daily_snapshot": 1,
+    "trade": 2,
+    "missed_opportunity": 3,
+    "process_quality": 4,
 }
 
 
@@ -60,6 +70,26 @@ class Sidecar:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self.poll_interval = sidecar_config.get("poll_interval_seconds", 60)
+
+        # gzip compression (#26)
+        self.use_gzip = sidecar_config.get("use_gzip", False)
+
+        # Diagnostics state (#24)
+        self._buffer_depth = 0
+        self._relay_reachable = False
+        self._last_successful_forward_at: Optional[str] = None
+        self._total_forwarded = 0
+        self._last_error: Optional[str] = None
+
+    def get_diagnostics(self) -> dict:
+        """Return snapshot of sidecar health state (#24)."""
+        return {
+            "sidecar_buffer_depth": self._buffer_depth,
+            "relay_reachable": self._relay_reachable,
+            "last_successful_forward_at": self._last_successful_forward_at,
+            "total_forwarded": self._total_forwarded,
+            "last_error": self._last_error,
+        }
 
     def _load_watermarks(self) -> Dict[str, int]:
         if self.watermark_file.exists():
@@ -142,6 +172,7 @@ class Sidecar:
             "event_id": event_id,
             "bot_id": self.bot_id,
             "event_type": event_type,
+            "priority": _EVENT_PRIORITY.get(event_type, 99),
             "payload": json.dumps(raw_event, default=str),
             "exchange_timestamp": exchange_ts,
         }
@@ -184,21 +215,36 @@ class Sidecar:
             "X-Signature": signature,
         }
 
+        # gzip compression (#26): compress payload, HMAC on uncompressed
+        body = canonical.encode()
+        if self.use_gzip:
+            body = gzip.compress(body)
+            headers["Content-Encoding"] = "gzip"
+
         for attempt in range(self.retry_max):
             try:
                 response = requests.post(
                     self.relay_url,
-                    data=canonical.encode(),
+                    data=body,
                     headers=headers,
                     timeout=30,
                 )
-                if response.status_code == 200:
+                if response.status_code in (200, 409):
+                    self._relay_reachable = True
+                    self._last_successful_forward_at = datetime.now(timezone.utc).isoformat()
+                    self._total_forwarded += len(events)
                     return True
-                elif response.status_code == 409:
-                    return True  # duplicate, treat as success
                 elif response.status_code == 401:
                     logger.error("Authentication failed — check HMAC secret")
+                    self._last_error = "auth_failed"
                     return False
+                elif response.status_code == 415 and self.use_gzip:
+                    # Relay doesn't support gzip — auto-disable and retry uncompressed
+                    logger.warning("Relay returned 415 — disabling gzip compression")
+                    self.use_gzip = False
+                    body = canonical.encode()
+                    headers.pop("Content-Encoding", None)
+                    continue
                 elif response.status_code == 429:
                     logger.warning("Rate limited by relay — backing off")
                 else:
@@ -212,29 +258,48 @@ class Sidecar:
             backoff = self.retry_backoff_base * (2 ** attempt)
             time.sleep(min(backoff, 300))
 
+        self._relay_reachable = False
+        self._last_error = "all_retries_failed"
         return False
 
     def run_once(self):
-        """Collect and forward all unsent events."""
+        """Collect and forward all unsent events, sorted by priority (#25)."""
         all_files = self._get_event_files()
-        total_sent = 0
 
+        # Collect ALL unsent events across all files first (#25)
+        all_unsent: List[dict] = []
         for filepath, event_type in all_files:
             unsent = self._read_unsent_events(filepath, event_type)
-            if not unsent:
-                continue
+            all_unsent.extend(unsent)
 
-            for i in range(0, len(unsent), self.batch_size):
-                batch = unsent[i:i + self.batch_size]
-                if self._send_batch(batch):
-                    key = str(filepath)
-                    max_line = max(e["_line_number"] for e in batch)
-                    self.watermarks[key] = max_line + 1
-                    self._save_watermarks()
-                    total_sent += len(batch)
-                else:
-                    logger.warning("Failed to send batch from %s, will retry", filepath)
-                    break
+        # Update buffer depth diagnostic (#24)
+        self._buffer_depth = len(all_unsent)
+
+        if not all_unsent:
+            return
+
+        # Sort by priority: errors first, then snapshots, trades, missed, scores (#25)
+        all_unsent.sort(key=lambda e: e.get("priority", 99))
+
+        total_sent = 0
+        for i in range(0, len(all_unsent), self.batch_size):
+            batch = all_unsent[i:i + self.batch_size]
+            if self._send_batch(batch):
+                # Update watermarks per-event using _source_file/_line_number
+                for evt in batch:
+                    src = evt["_source_file"]
+                    line = evt["_line_number"]
+                    current = self.watermarks.get(src, 0)
+                    if line + 1 > current:
+                        self.watermarks[src] = line + 1
+                self._save_watermarks()
+                total_sent += len(batch)
+            else:
+                logger.warning("Failed to send batch, will retry")
+                break
+
+        # Update buffer depth after sending
+        self._buffer_depth = max(0, self._buffer_depth - total_sent)
 
         if total_sent > 0:
             logger.info("Forwarded %d events to relay", total_sent)

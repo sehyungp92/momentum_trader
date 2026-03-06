@@ -398,6 +398,11 @@ class PositionState:
     exit_oms_ids: list[str] = field(default_factory=list)
     pending_exit_estimates: dict[str, float] = field(default_factory=dict)
 
+    # Session transition tracking (#17)
+    session_transitions: list = field(default_factory=list)
+    entry_session: str = ""
+    _last_session: str = ""
+
 
 # ── Instrument builder (OMS) ──────────────────────────────────────
 

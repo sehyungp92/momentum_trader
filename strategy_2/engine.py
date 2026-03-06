@@ -226,6 +226,12 @@ class NQDTCEngine:
         from collections import deque as _deque
         self._signal_ring: _deque = _deque(maxlen=10)
 
+        # Execution cascade timestamps (#16)
+        self._cascade_ts: dict[str, datetime] = {}
+
+        # Session transition tracking (#17)
+        self._session_transitions: list[dict] = []
+
         # Async tasks
         self._event_task: Optional[asyncio.Task] = None
         self._cycle_task: Optional[asyncio.Task] = None
@@ -359,6 +365,21 @@ class NQDTCEngine:
 
         # Session boundary reset (Section 1.4)
         if self._last_session is not None and self._last_session != session:
+            # Track session transition for open position (#17)
+            if self._position.open:
+                r_pts = abs(self._position.entry_price - self._position.initial_stop_price)
+                if self._position.direction == Direction.LONG:
+                    ur = (self._bars_5m.get("close", np.array([0]))[-1] - self._position.entry_price) / r_pts if r_pts > 0 else 0
+                else:
+                    ur = (self._position.entry_price - self._bars_5m.get("close", np.array([0]))[-1]) / r_pts if r_pts > 0 else 0
+                self._session_transitions.append({
+                    "from_session": self._last_session.value,
+                    "to_session": session.value,
+                    "transition_time": now.isoformat(),
+                    "unrealized_pnl_r": round(ur, 4),
+                    "bars_held": self._position.bars_since_entry,
+                    "price_at_transition": float(self._bars_5m.get("close", np.array([0]))[-1]),
+                })
             opposite = Session.ETH if session == Session.RTH else Session.RTH
             self._reset_engine(self._engines[opposite])
             # Reset session VWAP for new session
@@ -824,6 +845,9 @@ class NQDTCEngine:
 
     async def _evaluate_entries(self, engine: SessionEngineState, session: Session, now: datetime) -> None:
         """Evaluate and place entries when breakout is active."""
+        # Record signal detection timestamp (#16)
+        self._cascade_ts["_last_eval"] = now
+
         # Consecutive-loss cooldown: block entries during cooldown period
         if self._cooldown_bars > 0:
             return
@@ -1723,6 +1747,7 @@ class NQDTCEngine:
                     mae_r=pos.peak_mae_r,
                     mfe_price=pos.highest_since_entry if pos.direction == Direction.LONG else pos.lowest_since_entry,
                     mae_price=pos.lowest_since_entry if pos.direction == Direction.LONG else pos.highest_since_entry,
+                    session_transitions=self._session_transitions or None,
                 )
                 self._instr_trade_id = ""
             except Exception:
@@ -1839,6 +1864,7 @@ class NQDTCEngine:
                             mae_r=self._position.peak_mae_r,
                             mfe_price=self._position.highest_since_entry if self._position.direction == Direction.LONG else self._position.lowest_since_entry,
                             mae_price=self._position.lowest_since_entry if self._position.direction == Direction.LONG else self._position.highest_since_entry,
+                            session_transitions=self._session_transitions or None,
                         )
                         self._instr_trade_id = ""
                     except Exception:
@@ -1963,6 +1989,20 @@ class NQDTCEngine:
                 pv = inst_obj.point_value if inst_obj else 20.0
                 config_snapshot = snapshot_config_module(strategy_config)
 
+                # Execution cascade timestamps (#16)
+                signal_detected_at = self._cascade_ts.pop("_last_eval", now_ny)
+                fill_received_at = now_ny
+                exec_ts = {
+                    "signal_detected_at": signal_detected_at.isoformat(),
+                    "fill_received_at": fill_received_at.isoformat(),
+                    "cascade_duration_ms": round(
+                        (fill_received_at - signal_detected_at).total_seconds() * 1000
+                    ),
+                }
+
+                # Clear session transitions for new position (#17)
+                self._session_transitions.clear()
+
                 # Capture portfolio state at entry (G4)
                 portfolio_state = None
                 try:
@@ -2009,6 +2049,7 @@ class NQDTCEngine:
                     drawdown_size_mult=getattr(self._throttle, 'dd_size_mult', None),
                     portfolio_state=portfolio_state,
                     signal_evolution=self._build_signal_evolution(),
+                    execution_timestamps=exec_ts,
                 )
             except Exception:
                 pass

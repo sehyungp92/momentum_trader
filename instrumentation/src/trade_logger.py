@@ -129,6 +129,14 @@ class TradeEvent:
     experiment_id: Optional[str] = None
     experiment_variant: Optional[str] = None
 
+    # Execution cascade timestamps (#16)
+    # {signal_detected_at, intent_created_at, risk_checked_at, order_submitted_at, fill_received_at}
+    execution_timestamps: Optional[dict] = None
+
+    # Session transition tracking (#17)
+    # Each: {from_session, to_session, transition_time, unrealized_pnl_r, bars_held, price_at_transition}
+    session_transitions: Optional[List[dict]] = None
+
     # Strategy identification
     strategy_type: str = ""              # "helix" / "nqdtc" / "vdubus"
     param_set_id: Optional[str] = None   # sha256[:16] of strategy_params for grouping
@@ -263,6 +271,7 @@ class TradeLogger:
         mae_r: Optional[float] = None,
         mfe_price: Optional[float] = None,
         mae_price: Optional[float] = None,
+        session_transitions: Optional[List[dict]] = None,
     ) -> Optional[TradeEvent]:
         """Call this immediately after a trade exit is confirmed."""
         try:
@@ -315,6 +324,9 @@ class TradeLogger:
                     else:
                         actual_r = (trade.entry_price - exit_price) / risk_per_unit
                     trade.exit_efficiency = round(actual_r / mfe_r, 4)
+
+            if session_transitions:
+                trade.session_transitions = session_transitions
 
             trade.stage = "exit"
 

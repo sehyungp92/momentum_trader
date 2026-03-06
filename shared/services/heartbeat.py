@@ -84,8 +84,10 @@ async def emit_heartbeat(
     daily_pnl_r: float = 0.0,
     mode: str = "RUNNING",
     decision_code: str = None,
+    sidecar_diagnostics: Optional[dict] = None,
 ) -> None:
     """Simple heartbeat for strategy engines."""
+    details = {"sidecar": sidecar_diagnostics} if sidecar_diagnostics else None
     svc = HeartbeatService(store)
     await svc.strategy_heartbeat(
         strategy_id=strategy_id,
@@ -93,4 +95,5 @@ async def emit_heartbeat(
         heat_r=Decimal(str(heat_r)),
         daily_pnl_r=Decimal(str(daily_pnl_r)),
         last_decision_code=decision_code,
+        last_decision_details=details,
     )

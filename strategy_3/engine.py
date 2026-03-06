@@ -211,6 +211,12 @@ class VdubNQv4Engine:
         from collections import deque as _deque
         self._signal_ring: _deque = _deque(maxlen=10)
 
+        # Execution cascade timestamps (#16)
+        self._cascade_ts: dict[str, datetime] = {}
+
+        # Session transition tracking (#17)
+        self._last_session_window: str = ""
+
         # Async
         self._event_task: asyncio.Task | None = None
         self._cycle_task: asyncio.Task | None = None
@@ -367,6 +373,32 @@ class VdubNQv4Engine:
 
         # 6) Entry evaluation
         session, sub_window = classify_session(now)
+
+        # Session transition tracking (#17)
+        session_name = session.value if hasattr(session, 'value') else str(session)
+        if self._last_session_window and self._last_session_window != session_name:
+            last_price = float(self._c15[-1]) if len(self._c15) > 0 else 0.0
+            for pos in self.positions:
+                r_pts = abs(pos.entry_price - pos.stop_price)
+                if r_pts > 0:
+                    if pos.direction == Direction.LONG:
+                        ur = (last_price - pos.entry_price) / r_pts
+                    else:
+                        ur = (pos.entry_price - last_price) / r_pts
+                else:
+                    ur = 0.0
+                if not hasattr(pos, 'session_transitions_log'):
+                    pos.session_transitions_log = []
+                pos.session_transitions_log.append({
+                    "from_session": self._last_session_window,
+                    "to_session": session_name,
+                    "transition_time": now.isoformat(),
+                    "unrealized_pnl_r": round(ur, 4),
+                    "bars_held": pos.bars_since_entry,
+                    "price_at_transition": last_price,
+                })
+        self._last_session_window = session_name
+
         if session == SessionWindow.BLOCKED:
             return
 
@@ -513,6 +545,9 @@ class VdubNQv4Engine:
         self, direction: Direction, session: SessionWindow,
         sub_window: SubWindow, now: datetime,
     ) -> None:
+        # Record signal evaluation timestamp (#16)
+        self._cascade_ts["_last_eval"] = now
+
         # v4.2: Block entries during the 20:00 ET hour (40% WR, avgR=-0.141)
         if session == SessionWindow.EVENING and _to_et(now).hour == 20:
             return
@@ -1186,6 +1221,7 @@ class VdubNQv4Engine:
                     mae_r=pos.peak_mae_r,
                     mfe_price=pos.highest_since_entry if pos.direction == Direction.LONG else pos.lowest_since_entry,
                     mae_price=pos.lowest_since_entry if pos.direction == Direction.LONG else pos.highest_since_entry,
+                    session_transitions=getattr(pos, 'session_transitions_log', None) or None,
                 )
             except Exception:
                 pass
@@ -1293,6 +1329,16 @@ class VdubNQv4Engine:
                 pv = C.NQ_SPEC["point_value"]
                 config_snapshot = snapshot_config_module(strategy_config)
 
+                # Execution cascade timestamps (#16)
+                signal_detected_at = self._cascade_ts.pop("_last_eval", fill_time)
+                exec_ts = {
+                    "signal_detected_at": signal_detected_at.isoformat(),
+                    "fill_received_at": fill_time.isoformat(),
+                    "cascade_duration_ms": round(
+                        (fill_time - signal_detected_at).total_seconds() * 1000
+                    ),
+                }
+
                 # Capture portfolio state at entry (G4)
                 portfolio_state = None
                 try:
@@ -1339,6 +1385,7 @@ class VdubNQv4Engine:
                     drawdown_size_mult=getattr(self._throttle, 'dd_size_mult', None),
                     portfolio_state=portfolio_state,
                     signal_evolution=self._build_signal_evolution(),
+                    execution_timestamps=exec_ts,
                 )
             except Exception:
                 pass
@@ -1382,6 +1429,7 @@ class VdubNQv4Engine:
                             mae_r=pos.peak_mae_r,
                             mfe_price=pos.highest_since_entry if pos.direction == Direction.LONG else pos.lowest_since_entry,
                             mae_price=pos.lowest_since_entry if pos.direction == Direction.LONG else pos.highest_since_entry,
+                            session_transitions=getattr(pos, 'session_transitions_log', None) or None,
                         )
                     except Exception:
                         pass

@@ -20,6 +20,7 @@ from .process_scorer import ProcessScorer
 from .daily_snapshot import DailySnapshotBuilder
 from .regime_classifier import RegimeClassifier
 from .sidecar import Sidecar
+from .experiment import ExperimentRegistry
 
 logger = logging.getLogger("instrumentation.bootstrap")
 
@@ -79,11 +80,19 @@ class InstrumentationManager:
         self.daily_builder = DailySnapshotBuilder(self._config)
         self.regime_classifier = RegimeClassifier(data_provider=data_provider)
         self.sidecar = Sidecar(self._config)
+        self.experiment_registry = ExperimentRegistry()
 
         self._event_queue: Optional[asyncio.Queue] = None
         self._event_task: Optional[asyncio.Task] = None
         self._snapshot_task: Optional[asyncio.Task] = None
         self._running = False
+
+    def get_sidecar_diagnostics(self) -> Optional[dict]:
+        """Return sidecar health diagnostics for heartbeat (#24)."""
+        try:
+            return self.sidecar.get_diagnostics()
+        except Exception:
+            return None
 
     async def start(self) -> None:
         """Subscribe to OMS events and start background tasks."""

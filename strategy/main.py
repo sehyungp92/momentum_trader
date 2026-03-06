@@ -103,7 +103,11 @@ async def main() -> None:
         async def _heartbeat_loop():
             while True:
                 try:
-                    await emit_heartbeat(bootstrap_ctx.pg_store, STRATEGY_ID, mode="RUNNING")
+                    sidecar_diag = instr.get_sidecar_diagnostics() if instr else None
+                    await emit_heartbeat(
+                        bootstrap_ctx.pg_store, STRATEGY_ID, mode="RUNNING",
+                        sidecar_diagnostics=sidecar_diag,
+                    )
                 except Exception as e:
                     logger.warning("Heartbeat failed: %s", e)
                 await asyncio.sleep(30)

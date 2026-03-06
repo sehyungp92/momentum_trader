@@ -109,6 +109,9 @@ class Helix4Engine:
         # Spread re-check
         self._spread_recheck: list[tuple[Setup, int]] = []
 
+        # Execution cascade timestamps (#16)
+        self._cascade_ts: dict[str, datetime] = {}
+
         # Bid/ask cache
         self._bid: Optional[float] = None
         self._ask: Optional[float] = None
@@ -422,6 +425,21 @@ class Helix4Engine:
         self._expire_signatures(now_et)
 
         block = get_session_block(now_et)
+
+        # Session transition tracking (#17)
+        for pos in self.positions.positions:
+            if pos._last_session and pos._last_session != block.value:
+                ur = unrealized_r(pos, last_price)
+                pos.session_transitions.append({
+                    "from_session": pos._last_session,
+                    "to_session": block.value,
+                    "transition_time": now_et.isoformat(),
+                    "unrealized_pnl_r": round(ur, 4) if ur is not None else None,
+                    "bars_held": pos.bars_held_1h,
+                    "price_at_transition": last_price,
+                })
+            pos._last_session = block.value
+
         if entries_allowed(block) and not is_halt(now_et) and not is_reopen_dead(now_et):
             await self._detect_and_arm(now_et, last_price)
 
@@ -455,6 +473,10 @@ class Helix4Engine:
                     if (self._bar_idx_1h - self._last_m_bar.get(s.direction, -999))
                        >= CLASS_T_MIN_BARS_SINCE_M]
         candidates.extend(t_setups)
+
+        # Record signal detection timestamps (#16)
+        for setup in candidates:
+            self._cascade_ts[setup.setup_id] = now_et
 
         if not candidates:
             return
@@ -702,6 +724,11 @@ class Helix4Engine:
         pos.teleport_penalty = is_teleport
         setup.state = SetupState.FILLED
 
+        # Session transition tracking (#17)
+        block = get_session_block(now_et)
+        pos.entry_session = block.value
+        pos._last_session = block.value
+
         block = get_session_block(now_et)
         self.diagnostics.start_tracking(
             pos=pos, setup=setup, vol_pct=self.vol.vol_pct,
@@ -729,6 +756,17 @@ class Helix4Engine:
                 from .session import get_session_block
                 block = get_session_block(datetime.now(ET))
                 config_snapshot = snapshot_config_module(strategy_config)
+
+                # Execution cascade timestamps (#16)
+                signal_detected_at = self._cascade_ts.pop(setup.setup_id, now_et)
+                fill_received_at = now_et
+                exec_ts = {
+                    "signal_detected_at": signal_detected_at.isoformat(),
+                    "fill_received_at": fill_received_at.isoformat(),
+                    "cascade_duration_ms": round(
+                        (fill_received_at - signal_detected_at).total_seconds() * 1000
+                    ),
+                }
 
                 # Capture portfolio state at entry (G4)
                 portfolio_state = None
@@ -786,6 +824,7 @@ class Helix4Engine:
                     drawdown_size_mult=self._throttle.dd_size_mult,
                     portfolio_state=portfolio_state,
                     signal_evolution=self._build_signal_evolution(),
+                    execution_timestamps=exec_ts,
                 )
             except Exception:
                 pass
@@ -813,6 +852,7 @@ class Helix4Engine:
                         mae_r=pos.peak_mae_r,
                         mfe_price=pos.highest_since_entry if pos.direction == 1 else pos.lowest_since_entry,
                         mae_price=pos.lowest_since_entry if pos.direction == 1 else pos.highest_since_entry,
+                        session_transitions=pos.session_transitions or None,
                     )
                 except Exception:
                     pass
@@ -847,6 +887,7 @@ class Helix4Engine:
                         mae_r=pos.peak_mae_r,
                         mfe_price=pos.highest_since_entry if pos.direction == 1 else pos.lowest_since_entry,
                         mae_price=pos.lowest_since_entry if pos.direction == 1 else pos.highest_since_entry,
+                        session_transitions=pos.session_transitions or None,
                     )
                 except Exception:
                     pass

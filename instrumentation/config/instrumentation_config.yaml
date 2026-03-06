@@ -23,6 +23,7 @@ sidecar:
   retry_backoff_base_seconds: 10
   poll_interval_seconds: 60
   buffer_dir: "instrumentation/data/.sidecar_buffer"
+  use_gzip: false  # Enable when relay supports Content-Encoding: gzip
 
 logging:
   level: "INFO"
