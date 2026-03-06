@@ -113,6 +113,9 @@ class Helix4Engine:
         self._bid: Optional[float] = None
         self._ask: Optional[float] = None
 
+        # Signal evolution ring buffer (M2)
+        self._signal_ring: deque = deque(maxlen=10)
+
         # Event-driven infrastructure
         self._bar_streams: dict[TF, object] = {}
         self._ticker = None
@@ -174,6 +177,22 @@ class Helix4Engine:
 
         return decisions
 
+    def _snapshot_signal_state(self) -> dict:
+        """Capture current 1H signal state for evolution tracking (M2)."""
+        return {
+            "close": self.h1.last_close,
+            "ema_fast": self.h1.ema_fast(),
+            "ema_slow": self.h1.ema_slow(),
+            "atr": self.h1.current_atr(),
+            "macd_line": self.h1.macd_line_now(),
+            "macd_hist": self.h1.macd_hist_now(),
+        }
+
+    def _build_signal_evolution(self, n: int = 5) -> list[dict]:
+        """Return last n signal snapshots with bars_ago labels."""
+        items = list(self._signal_ring)[-n:]
+        return [{"bars_ago": n - 1 - i, **s} for i, s in enumerate(items)]
+
     def _log_missed(self, setup, blocked_by: str, block_reason: str, **extra):
         if not self._kit.active:
             return
@@ -199,6 +218,7 @@ class Helix4Engine:
                 concurrent_positions=len(self.positions.positions),
                 drawdown_pct=self._throttle.dd_pct if hasattr(self._throttle, 'dd_pct') else None,
                 drawdown_tier=self._dd_tier_name(),
+                signal_evolution=self._build_signal_evolution(),
             )
         except Exception:
             pass
@@ -333,6 +353,7 @@ class Helix4Engine:
                     self.pivots_1h.on_bar(bar, self.h1)
                     self.signals.tick_bars()
                     self._bar_idx_1h += 1
+                    self._signal_ring.append(self._snapshot_signal_state())
                     await self._on_eval_tick()
                 elif tf == TF.H4:
                     self.pivots_4h.on_bar(bar, self.h4)
@@ -764,6 +785,7 @@ class Helix4Engine:
                     drawdown_tier=self._dd_tier_name(),
                     drawdown_size_mult=self._throttle.dd_size_mult,
                     portfolio_state=portfolio_state,
+                    signal_evolution=self._build_signal_evolution(),
                 )
             except Exception:
                 pass

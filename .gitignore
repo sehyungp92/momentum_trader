@@ -51,3 +51,6 @@ ehthumbs.db
 # ── Claude Code local settings ───────────────────────
 .claude/
 .agents/
+
+# ── Reference documents (not source code) ────────────
+_references/

@@ -88,6 +88,9 @@ class MissedOpportunityEvent:
     # Market conditions at entry (G8)
     market_conditions_at_entry: Optional[dict] = None
 
+    # Signal evolution: last N bars of signal component values before signal (M2)
+    signal_evolution: Optional[List[dict]] = None
+
     # Experiment tracking (G5, B11)
     experiment_id: Optional[str] = None
     experiment_variant: Optional[str] = None
@@ -182,6 +185,7 @@ class MissedOpportunityLogger:
         market_regime: str = "",
         exchange_timestamp: Optional[datetime] = None,
         bar_id: Optional[str] = None,
+        signal_evolution: Optional[List[dict]] = None,
     ) -> MissedOpportunityEvent:
         """Call this when a signal fires but is blocked."""
         try:
@@ -238,6 +242,8 @@ class MissedOpportunityLogger:
                 experiment_variant=self.experiment_variant,
                 backfill_status="pending",
             )
+
+            event.signal_evolution = signal_evolution
 
             self._write_event(event)
 

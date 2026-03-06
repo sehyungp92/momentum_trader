@@ -207,11 +207,40 @@ class VdubNQv4Engine:
         self._es_h = np.array([])
         self._es_l = np.array([])
 
+        # Signal evolution ring buffer (M2)
+        from collections import deque as _deque
+        self._signal_ring: _deque = _deque(maxlen=10)
+
         # Async
         self._event_task: asyncio.Task | None = None
         self._cycle_task: asyncio.Task | None = None
         self._event_queue: asyncio.Queue | None = None
         self._running = False
+
+    # ------------------------------------------------------------------
+    # Signal evolution (M2)
+    # ------------------------------------------------------------------
+
+    def _snapshot_signal_state(self) -> dict:
+        """Capture current 15m signal state for evolution tracking."""
+        c = float(self._c15[-1]) if len(self._c15) > 0 else 0.0
+        svwap = float(self._svwap[-1]) if len(self._svwap) > 0 else 0.0
+        vwap_a = float(self._vwap_a_val) if not np.isnan(self._vwap_a_val) else None
+        atr = float(self._atr15[-1]) if len(self._atr15) > 0 else 0.0
+        mom = float(self._mom15[-1]) if len(self._mom15) > 0 else 0.0
+        return {
+            "close": c,
+            "momentum": mom,
+            "atr_15m": atr,
+            "session_vwap": svwap,
+            "vwap_a": vwap_a,
+            "vwap_distance_pct": round((c - svwap) / c * 100, 4) if c > 0 and svwap > 0 else None,
+        }
+
+    def _build_signal_evolution(self, n: int = 5) -> list[dict]:
+        """Return last n signal snapshots with bars_ago labels."""
+        items = list(self._signal_ring)[-n:]
+        return [{"bars_ago": n - 1 - i, **s} for i, s in enumerate(items)]
 
     # ------------------------------------------------------------------
     # Missed opportunity logging
@@ -232,6 +261,7 @@ class VdubNQv4Engine:
                 concurrent_positions=len(self.positions),
                 drawdown_pct=getattr(self._throttle, 'dd_pct', None),
                 drawdown_tier=self._dd_tier_name(),
+                signal_evolution=self._build_signal_evolution(),
             )
         except Exception:
             pass
@@ -300,6 +330,7 @@ class VdubNQv4Engine:
         await self._fetch_bars()
         self._update_indicators()
         self._update_regime()
+        self._signal_ring.append(self._snapshot_signal_state())
 
         # 1) Manage working entries (TTL, teleport, fallback)
         await self._manage_working_entries()
@@ -1307,6 +1338,7 @@ class VdubNQv4Engine:
                     drawdown_tier=self._dd_tier_name(),
                     drawdown_size_mult=getattr(self._throttle, 'dd_size_mult', None),
                     portfolio_state=portfolio_state,
+                    signal_evolution=self._build_signal_evolution(),
                 )
             except Exception:
                 pass

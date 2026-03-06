@@ -222,6 +222,10 @@ class NQDTCEngine:
         # Helix veto state (Phase 3.4)
         self._helix_signals: list[tuple[datetime, Direction]] = []
 
+        # Signal evolution ring buffer (M2)
+        from collections import deque as _deque
+        self._signal_ring: _deque = _deque(maxlen=10)
+
         # Async tasks
         self._event_task: Optional[asyncio.Task] = None
         self._cycle_task: Optional[asyncio.Task] = None
@@ -600,6 +604,9 @@ class NQDTCEngine:
         # Breakout qualification (only from ACTIVE state, matches backtest)
         if engine.box.state == BoxState.ACTIVE and not engine.breakout.active:
             self._try_breakout(engine, h30, l30, c30, o30, v30, now)
+
+        # Signal evolution: snapshot 30m state after all updates (M2)
+        self._signal_ring.append(self._snapshot_signal_state(engine))
 
     def _try_breakout(
         self, engine: SessionEngineState,
@@ -2001,6 +2008,7 @@ class NQDTCEngine:
                     drawdown_tier=self._dd_tier_name(),
                     drawdown_size_mult=getattr(self._throttle, 'dd_size_mult', None),
                     portfolio_state=portfolio_state,
+                    signal_evolution=self._build_signal_evolution(),
                 )
             except Exception:
                 pass
@@ -2167,6 +2175,32 @@ class NQDTCEngine:
             pass
 
     # ------------------------------------------------------------------
+    # Signal evolution (M2)
+    # ------------------------------------------------------------------
+
+    def _snapshot_signal_state(self, engine: SessionEngineState) -> dict:
+        """Capture current 30m signal state for evolution tracking."""
+        bars = self._bars_30m_session.get(engine.session, {})
+        c30 = bars.get("close")
+        close = float(c30[-1]) if c30 is not None and len(c30) > 0 else 0.0
+        return {
+            "close": close,
+            "atr_14": engine.atr14_30m,
+            "displacement": engine.last_disp_metric,
+            "score": engine.last_score,
+            "chop_score": engine.chop_score,
+            "rvol": engine.last_rvol,
+            "squeeze": float(engine.squeeze_hist.data[-1]) if len(engine.squeeze_hist.data) > 0 else 0.0,
+            "vwap_session": float(engine.vwap_session.value) if engine.vwap_session.value else 0.0,
+            "regime": self._regime.composite.value if self._regime.composite else "",
+        }
+
+    def _build_signal_evolution(self, n: int = 5) -> list[dict]:
+        """Return last n signal snapshots with bars_ago labels."""
+        items = list(self._signal_ring)[-n:]
+        return [{"bars_ago": n - 1 - i, **s} for i, s in enumerate(items)]
+
+    # ------------------------------------------------------------------
     # Missed opportunity logging
     # ------------------------------------------------------------------
 
@@ -2186,6 +2220,7 @@ class NQDTCEngine:
                 concurrent_positions=1 if self._position.open else 0,
                 drawdown_pct=getattr(self._throttle, 'dd_pct', None),
                 drawdown_tier=self._dd_tier_name(),
+                signal_evolution=self._build_signal_evolution(),
             )
         except Exception:
             pass

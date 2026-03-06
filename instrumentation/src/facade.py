@@ -72,6 +72,7 @@ class InstrumentationKit:
         bar_id: Optional[str] = None,
         exchange_timestamp: Optional[datetime] = None,
         entry_latency_ms: Optional[int] = None,
+        signal_evolution: Optional[list[dict]] = None,
     ) -> None:
         if not self._mgr:
             return
@@ -115,6 +116,7 @@ class InstrumentationKit:
                 trade.drawdown_size_mult = drawdown_size_mult
                 trade.experiment_id = self._experiment_id
                 trade.experiment_variant = self._experiment_variant
+                trade.signal_evolution = signal_evolution
 
         except Exception as e:
             logger.warning("InstrumentationKit.log_entry failed: %s", e)
@@ -172,6 +174,7 @@ class InstrumentationKit:
         drawdown_tier: str = "",
         exchange_timestamp: Optional[datetime] = None,
         bar_id: Optional[str] = None,
+        signal_evolution: Optional[list[dict]] = None,
     ) -> None:
         if not self._mgr:
             return
@@ -205,6 +208,7 @@ class InstrumentationKit:
                 market_regime=regime,
                 exchange_timestamp=exchange_timestamp,
                 bar_id=bar_id,
+                signal_evolution=signal_evolution,
             )
         except Exception as e:
             logger.warning("InstrumentationKit.log_missed failed: %s", e)

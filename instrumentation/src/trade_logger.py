@@ -57,6 +57,10 @@ class TradeEvent:
     # Strategy config snapshot
     strategy_params_at_entry: Optional[dict] = None
 
+    # Signal evolution: last N bars of signal component values before entry (M2)
+    # Each dict: {bars_ago: int, close: float, ...strategy-specific signal components}
+    signal_evolution: Optional[List[dict]] = None
+
     # Signal confluence factors (highest-impact #1)
     # Each dict: {factor_name: str, factor_value: float, threshold: float, contribution: float}
     signal_factors: List[dict] = field(default_factory=list)

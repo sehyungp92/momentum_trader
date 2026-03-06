@@ -292,3 +292,33 @@ class TestTradeLogger:
             strategy_params={},
         )
         assert trade.param_set_id is None
+
+    def test_signal_evolution_defaults_none(self):
+        """signal_evolution field defaults to None for backward compatibility."""
+        te = TradeEvent(trade_id="t1", event_metadata={}, entry_snapshot={})
+        assert te.signal_evolution is None
+        d = te.to_dict()
+        assert d["signal_evolution"] is None
+
+    def test_signal_evolution_serializes(self):
+        """signal_evolution round-trips through to_dict()."""
+        evolution = [
+            {"bars_ago": 4, "close": 21050.0, "ema_fast": 21040.5, "atr": 45.2},
+            {"bars_ago": 3, "close": 21065.0, "ema_fast": 21045.2, "atr": 44.8},
+            {"bars_ago": 2, "close": 21080.0, "ema_fast": 21052.1, "atr": 44.5},
+            {"bars_ago": 1, "close": 21095.0, "ema_fast": 21060.8, "atr": 45.0},
+            {"bars_ago": 0, "close": 21110.0, "ema_fast": 21070.3, "atr": 45.3},
+        ]
+        te = TradeEvent(
+            trade_id="t1", event_metadata={}, entry_snapshot={},
+            signal_evolution=evolution,
+        )
+        d = te.to_dict()
+        assert len(d["signal_evolution"]) == 5
+        assert d["signal_evolution"][0]["bars_ago"] == 4
+        assert d["signal_evolution"][4]["close"] == 21110.0
+
+        # Verify JSON round-trip
+        serialized = json.dumps(d, default=str)
+        parsed = json.loads(serialized)
+        assert parsed["signal_evolution"] == evolution
