@@ -26,6 +26,11 @@ _DIR_TO_EVENT_TYPE = {
     "orders": "order",
     "heartbeats": "heartbeat",
     "portfolio_rules": "portfolio_rule",
+    # Phase 2B event types
+    "indicators": "indicator_snapshot",
+    "filter_decisions": "filter_decision",
+    "orderbook": "orderbook_context",
+    "config_changes": "parameter_change",
 }
 
 # Event priority for sorting (#25): lower number = higher priority
@@ -36,7 +41,11 @@ _EVENT_PRIORITY = {
     "missed_opportunity": 3,
     "order": 3,
     "portfolio_rule": 3,
+    "parameter_change": 3,
     "process_quality": 4,
+    "indicator_snapshot": 4,
+    "filter_decision": 4,
+    "orderbook_context": 4,
     "heartbeat": 5,
 }
 

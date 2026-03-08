@@ -33,11 +33,23 @@ class InstrumentationKit:
         # Get experiment tracking from manager's config
         self._experiment_id = None
         self._experiment_variant = None
+        # Lazy-init loggers for Phase 2B event types
+        self._indicator_logger = None
+        self._filter_event_logger = None
+        self._orderbook_logger = None
         if manager:
             try:
                 config = getattr(manager, '_config', {})
                 self._experiment_id = config.get("experiment_id")
                 self._experiment_variant = config.get("experiment_variant")
+                data_dir = config.get("data_dir", "instrumentation/data")
+                bot_id = config.get("bot_id", "")
+                from .indicator_logger import IndicatorLogger
+                from .filter_event_logger import FilterEventLogger
+                from .orderbook_logger import OrderBookLogger
+                self._indicator_logger = IndicatorLogger(data_dir=data_dir, bot_id=bot_id)
+                self._filter_event_logger = FilterEventLogger(data_dir=data_dir, bot_id=bot_id)
+                self._orderbook_logger = OrderBookLogger(data_dir=data_dir, bot_id=bot_id)
             except Exception:
                 pass
 
@@ -103,6 +115,21 @@ class InstrumentationKit:
                 portfolio_state=portfolio_state,
             )
 
+            # Phase 2C: dynamic experiment variant assignment via registry
+            exp_id = self._experiment_id or ""
+            exp_var = self._experiment_variant or ""
+            if self._mgr and hasattr(self._mgr, 'experiment_registry') and self._mgr.experiment_registry:
+                try:
+                    registry = self._mgr.experiment_registry
+                    for exp in registry.active_experiments():
+                        if exp.strategy_type and exp.strategy_type != self._strategy_type:
+                            continue
+                        exp_id = exp.experiment_id
+                        exp_var = registry.assign_variant(exp.experiment_id, trade_id)
+                        break
+                except Exception:
+                    pass
+
             # Patch enriched fields onto the TradeEvent stored in _open_trades
             trade = self._mgr.trade_logger._open_trades.get(trade_id)
             if trade:
@@ -117,10 +144,22 @@ class InstrumentationKit:
                 trade.drawdown_pct = drawdown_pct
                 trade.drawdown_tier = drawdown_tier
                 trade.drawdown_size_mult = drawdown_size_mult
-                trade.experiment_id = self._experiment_id
-                trade.experiment_variant = self._experiment_variant
+                trade.experiment_id = exp_id
+                trade.experiment_variant = exp_var
                 trade.signal_evolution = signal_evolution
                 trade.execution_timestamps = execution_timestamps
+
+            # Phase 2B: emit standalone filter decision events
+            if filter_decisions:
+                self.on_filter_decisions(
+                    filter_decisions=filter_decisions,
+                    pair=pair,
+                    signal_name=entry_signal,
+                    signal_strength=entry_signal_strength,
+                    strategy_type=self._strategy_type,
+                    exchange_timestamp=exchange_timestamp,
+                    bar_id=bar_id,
+                )
 
         except Exception as e:
             logger.warning("InstrumentationKit.log_entry failed: %s", e)
@@ -198,6 +237,16 @@ class InstrumentationKit:
                 enriched_params["_drawdown_tier"] = drawdown_tier
             if filter_decisions:
                 enriched_params["_filter_decisions"] = filter_decisions
+                # Phase 2B: emit standalone filter decision events
+                self.on_filter_decisions(
+                    filter_decisions=filter_decisions,
+                    pair=pair,
+                    signal_name=signal,
+                    signal_strength=signal_strength,
+                    strategy_type=self._strategy_type,
+                    exchange_timestamp=exchange_timestamp,
+                    bar_id=bar_id,
+                )
             if coordination_context:
                 enriched_params["_coordination_context"] = coordination_context
 
@@ -307,3 +356,87 @@ class InstrumentationKit:
                 f.write(json.dumps(heartbeat_data, default=str) + "\n")
         except Exception:
             pass  # instrumentation must never affect trading
+
+    def on_indicator_snapshot(
+        self,
+        pair: str,
+        indicators: dict[str, float],
+        signal_name: str,
+        signal_strength: float,
+        decision: str,
+        strategy_type: str,
+        exchange_timestamp=None,
+        bar_id: str | None = None,
+        context: dict | None = None,
+    ) -> None:
+        """Fire-and-forget indicator snapshot."""
+        try:
+            if self._indicator_logger:
+                self._indicator_logger.log_snapshot(
+                    pair=pair, indicators=indicators,
+                    signal_name=signal_name, signal_strength=signal_strength,
+                    decision=decision, strategy_type=strategy_type,
+                    exchange_timestamp=exchange_timestamp, bar_id=bar_id,
+                    context=context,
+                )
+        except Exception:
+            pass
+
+    def on_filter_decisions(
+        self,
+        filter_decisions: list,
+        pair: str,
+        signal_name: str = "",
+        signal_strength: float = 0.0,
+        strategy_type: str = "",
+        exchange_timestamp=None,
+        bar_id: str | None = None,
+    ) -> None:
+        """Emit all filter decisions from a signal evaluation as standalone events."""
+        try:
+            if self._filter_event_logger:
+                from .filter_decision import FilterDecision
+                fds = []
+                for fd in filter_decisions:
+                    if isinstance(fd, FilterDecision):
+                        fds.append(fd)
+                    elif isinstance(fd, dict):
+                        fds.append(FilterDecision(
+                            filter_name=fd.get("filter_name", ""),
+                            threshold=fd.get("threshold", 0.0),
+                            actual_value=fd.get("actual_value", 0.0),
+                            passed=fd.get("passed", True),
+                        ))
+                self._filter_event_logger.log_decisions(
+                    fds, pair=pair, signal_name=signal_name,
+                    signal_strength=signal_strength, strategy_type=strategy_type,
+                    exchange_timestamp=exchange_timestamp, bar_id=bar_id,
+                )
+        except Exception:
+            pass
+
+    def on_orderbook_context(
+        self,
+        pair: str,
+        best_bid: float,
+        best_ask: float,
+        trade_context: str | None = None,
+        related_trade_id: str | None = None,
+        bid_depth_10bps: float = 0.0,
+        ask_depth_10bps: float = 0.0,
+        bid_levels: list[dict] | None = None,
+        ask_levels: list[dict] | None = None,
+        exchange_timestamp=None,
+    ) -> None:
+        """Fire-and-forget order book context."""
+        try:
+            if self._orderbook_logger:
+                self._orderbook_logger.log_context(
+                    pair=pair, best_bid=best_bid, best_ask=best_ask,
+                    trade_context=trade_context, related_trade_id=related_trade_id,
+                    bid_depth_10bps=bid_depth_10bps, ask_depth_10bps=ask_depth_10bps,
+                    bid_levels=bid_levels, ask_levels=ask_levels,
+                    exchange_timestamp=exchange_timestamp,
+                )
+        except Exception:
+            pass

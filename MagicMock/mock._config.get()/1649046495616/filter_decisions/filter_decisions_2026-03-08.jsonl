@@ -1,0 +1,1 @@
+{"bot_id": "<MagicMock name='mock._config.get()' id='1649046495616'>", "pair": "NQ", "timestamp": "2026-03-08T01:08:45.776168+00:00", "event_id": "7a8b3cc0890a794a", "filter_name": "heat_cap", "threshold": 0.0, "actual_value": 0.0, "passed": false, "margin_pct": null, "signal_name": "Class_M", "signal_strength": 0.667, "strategy_type": "helix", "bar_id": null}

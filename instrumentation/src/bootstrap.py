@@ -22,6 +22,7 @@ from .regime_classifier import RegimeClassifier
 from .sidecar import Sidecar
 from .experiment import ExperimentRegistry
 from .order_logger import OrderLogger
+from .config_watcher import ConfigWatcher
 
 logger = logging.getLogger("instrumentation.bootstrap")
 
@@ -83,6 +84,22 @@ class InstrumentationManager:
         self.daily_builder = DailySnapshotBuilder(self._config, experiment_registry=self.experiment_registry)
         self.regime_classifier = RegimeClassifier(data_provider=data_provider)
         self.sidecar = Sidecar(self._config)
+
+        # Phase 2B: config change detection — only monitor this strategy's config
+        _strategy_config_map = {
+            "helix": ["strategy.config"],
+            "nqdtc": ["strategy_2.config"],
+            "vdubus": ["strategy_3.config"],
+        }
+        config_modules = _strategy_config_map.get(strategy_type, [])
+        try:
+            self.config_watcher = ConfigWatcher(
+                bot_id=strategy_id,
+                config_modules=config_modules,
+                data_dir=self._config["data_dir"],
+            )
+        except Exception:
+            self.config_watcher = None
 
         self._event_queue: Optional[asyncio.Queue] = None
         self._event_task: Optional[asyncio.Task] = None
@@ -282,6 +299,12 @@ class InstrumentationManager:
                 self.snapshot_service.run_periodic()
             except Exception as e:
                 logger.warning("Periodic snapshot failed: %s", e)
+            # Config change detection (Phase 2B)
+            try:
+                if self.config_watcher:
+                    self.config_watcher.check()
+            except Exception as e:
+                logger.warning("Config watcher check failed: %s", e)
             # Post-exit price backfill
             try:
                 if hasattr(self.snapshot_service, '_data_provider') and self.snapshot_service._data_provider:

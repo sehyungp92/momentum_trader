@@ -491,6 +491,37 @@ class Helix4Engine:
                        >= CLASS_T_MIN_BARS_SINCE_M]
         candidates.extend(t_setups)
 
+        # Phase 2B: emit indicator snapshot at signal evaluation
+        if self._kit.active:
+            try:
+                best = candidates[0] if candidates else None
+                self._kit.on_indicator_snapshot(
+                    pair=self.nq_inst.symbol,
+                    indicators={
+                        "ema_fast": self.h1.ema_fast(),
+                        "ema_slow": self.h1.ema_slow(),
+                        "atr_14": self.h1.current_atr(),
+                        "macd_line": self.h1.macd_line_now(),
+                        "macd_hist": self.h1.macd_hist_now(),
+                        "vol_pct": self.vol.vol_pct,
+                        "trend_strength": trend_strength(self.daily),
+                    },
+                    signal_name=f"helix_class_{best.cls.value}" if best else "helix_eval",
+                    signal_strength=best.alignment_score / 3.0 if best else 0.0,
+                    decision="enter" if candidates else "skip",
+                    strategy_type="helix",
+                    exchange_timestamp=now_et,
+                    context={
+                        "session": get_session_block(now_et).value,
+                        "contract_month": getattr(self._contract, 'lastTradeDateOrContractMonth', ''),
+                        "signal_class": best.cls.value if best else "",
+                        "concurrent_positions": len(self.positions.positions),
+                        "drawdown_tier": self._dd_tier_name(),
+                    },
+                )
+            except Exception:
+                pass
+
         # Record signal detection timestamps (#16)
         for setup in candidates:
             self._cascade_ts[setup.setup_id] = now_et
@@ -843,6 +874,17 @@ class Helix4Engine:
                     signal_evolution=self._build_signal_evolution(),
                     execution_timestamps=exec_ts,
                 )
+
+                # Phase 2B: emit orderbook context at entry
+                if self._bid is not None and self._ask is not None:
+                    self._kit.on_orderbook_context(
+                        pair=self.nq_inst.symbol,
+                        best_bid=self._bid,
+                        best_ask=self._ask,
+                        trade_context="entry",
+                        related_trade_id=setup.setup_id,
+                        exchange_timestamp=now_et,
+                    )
             except Exception:
                 pass
 
@@ -871,6 +913,15 @@ class Helix4Engine:
                         mae_price=pos.lowest_since_entry if pos.direction == 1 else pos.highest_since_entry,
                         session_transitions=pos.session_transitions or None,
                     )
+                    if self._bid is not None and self._ask is not None:
+                        self._kit.on_orderbook_context(
+                            pair=self.nq_inst.symbol,
+                            best_bid=self._bid,
+                            best_ask=self._ask,
+                            trade_context="exit",
+                            related_trade_id=pos.origin_setup_id,
+                            exchange_timestamp=now_et,
+                        )
                 except Exception:
                     pass
 
@@ -906,6 +957,14 @@ class Helix4Engine:
                         mae_price=pos.lowest_since_entry if pos.direction == 1 else pos.highest_since_entry,
                         session_transitions=pos.session_transitions or None,
                     )
+                    if self._bid is not None and self._ask is not None:
+                        self._kit.on_orderbook_context(
+                            pair=self.nq_inst.symbol,
+                            best_bid=self._bid,
+                            best_ask=self._ask,
+                            trade_context="exit",
+                            related_trade_id=pos.origin_setup_id,
+                        )
                 except Exception:
                     pass
 

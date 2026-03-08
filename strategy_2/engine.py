@@ -898,6 +898,37 @@ class NQDTCEngine:
         direction = engine.breakout.direction
         trade_dir = direction
 
+        # Phase 2B: emit indicator snapshot at entry evaluation
+        if self._kit.active:
+            try:
+                self._kit.on_indicator_snapshot(
+                    pair=self._symbol,
+                    indicators={
+                        "atr14_30m": engine.atr14_30m,
+                        "displacement": engine.last_disp_metric,
+                        "disp_threshold": engine.last_disp_threshold,
+                        "chop_score": engine.chop_score,
+                        "rvol": engine.last_rvol,
+                        "score": engine.last_score,
+                        "vwap_session": float(engine.vwap_session.value) if engine.vwap_session.value else 0.0,
+                    },
+                    signal_name=f"nqdtc_breakout_{direction.name}",
+                    signal_strength=0.5,
+                    decision="eval",
+                    strategy_type="nqdtc",
+                    exchange_timestamp=now,
+                    context={
+                        "session": engine.session.value,
+                        "mode": engine.mode.value,
+                        "regime_4h": self._regime.regime_4h.value,
+                        "composite": self._regime.composite.value if self._regime.composite else "",
+                        "concurrent_positions": 1 if self._position.open else 0,
+                        "drawdown_tier": self._dd_tier_name(),
+                    },
+                )
+            except Exception:
+                pass
+
         # Compute composite regime for this trade direction
         daily_supports, daily_opposes = sig.classify_daily_support(
             self._bars_daily.get("ema50", np.array([])),
@@ -1770,6 +1801,13 @@ class NQDTCEngine:
                     mae_price=pos.lowest_since_entry if pos.direction == Direction.LONG else pos.highest_since_entry,
                     session_transitions=self._session_transitions or None,
                 )
+                self._kit.on_orderbook_context(
+                    pair=self._symbol,
+                    best_bid=est_exit,
+                    best_ask=est_exit,
+                    trade_context="exit",
+                    related_trade_id=self._instr_trade_id,
+                )
                 self._instr_trade_id = ""
             except Exception:
                 pass
@@ -1886,6 +1924,13 @@ class NQDTCEngine:
                             mfe_price=self._position.highest_since_entry if self._position.direction == Direction.LONG else self._position.lowest_since_entry,
                             mae_price=self._position.lowest_since_entry if self._position.direction == Direction.LONG else self._position.highest_since_entry,
                             session_transitions=self._session_transitions or None,
+                        )
+                        self._kit.on_orderbook_context(
+                            pair=self._symbol,
+                            best_bid=price,
+                            best_ask=price,
+                            trade_context="exit",
+                            related_trade_id=self._instr_trade_id,
                         )
                         self._instr_trade_id = ""
                     except Exception:
@@ -2074,6 +2119,16 @@ class NQDTCEngine:
                     portfolio_state=portfolio_state,
                     signal_evolution=self._build_signal_evolution(),
                     execution_timestamps=exec_ts,
+                )
+
+                # Phase 2B: emit orderbook context at entry
+                self._kit.on_orderbook_context(
+                    pair=self._symbol,
+                    best_bid=price,
+                    best_ask=price,
+                    trade_context="entry",
+                    related_trade_id=oms_id,
+                    exchange_timestamp=now_ny,
                 )
             except Exception:
                 pass

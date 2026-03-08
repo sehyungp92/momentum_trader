@@ -362,6 +362,39 @@ class VdubNQv4Engine:
         self._update_regime()
         self._signal_ring.append(self._snapshot_signal_state())
 
+        # Phase 2B: emit indicator snapshot at each 15m evaluation
+        if self._kit.active:
+            try:
+                c = float(self._c15[-1]) if len(self._c15) > 0 else 0.0
+                svwap = float(self._svwap[-1]) if len(self._svwap) > 0 else 0.0
+                self._kit.on_indicator_snapshot(
+                    pair="NQ",
+                    indicators={
+                        "close": c,
+                        "momentum": float(self._mom15[-1]) if len(self._mom15) > 0 else 0.0,
+                        "atr_15m": float(self._atr15[-1]) if len(self._atr15) > 0 else 0.0,
+                        "atr_1h": float(self._atr1h[-1]) if len(self._atr1h) > 0 else 0.0,
+                        "session_vwap": svwap,
+                        "vwap_a": float(self._vwap_a_val) if not np.isnan(self._vwap_a_val) else 0.0,
+                        "vwap_distance_pct": round((c - svwap) / c * 100, 4) if c > 0 and svwap > 0 else 0.0,
+                        "choppiness": self.regime.choppiness,
+                    },
+                    signal_name="vdubus_eval",
+                    signal_strength=0.0,
+                    decision="eval",
+                    strategy_type="vdubus",
+                    exchange_timestamp=now,
+                    context={
+                        "daily_trend": self.regime.daily_trend,
+                        "vol_state": self.regime.vol_state.value,
+                        "trend_1h": self.regime.trend_1h,
+                        "concurrent_positions": len(self.positions),
+                        "drawdown_tier": self._dd_tier_name(),
+                    },
+                )
+            except Exception:
+                pass
+
         # 1) Manage working entries (TTL, teleport, fallback)
         await self._manage_working_entries()
 
@@ -1247,6 +1280,13 @@ class VdubNQv4Engine:
                     mae_price=pos.lowest_since_entry if pos.direction == Direction.LONG else pos.highest_since_entry,
                     session_transitions=getattr(pos, 'session_transitions_log', None) or None,
                 )
+                self._kit.on_orderbook_context(
+                    pair="NQ",
+                    best_bid=price,
+                    best_ask=price,
+                    trade_context="exit",
+                    related_trade_id=pos.trade_id,
+                )
             except Exception:
                 pass
         pos.qty_open = 0
@@ -1411,6 +1451,16 @@ class VdubNQv4Engine:
                     signal_evolution=self._build_signal_evolution(),
                     execution_timestamps=exec_ts,
                 )
+
+                # Phase 2B: emit orderbook context at entry
+                self._kit.on_orderbook_context(
+                    pair="NQ",
+                    best_bid=fill_price,
+                    best_ask=fill_price,
+                    trade_context="entry",
+                    related_trade_id=trade_id,
+                    exchange_timestamp=fill_time,
+                )
             except Exception:
                 pass
 
@@ -1454,6 +1504,13 @@ class VdubNQv4Engine:
                             mfe_price=pos.highest_since_entry if pos.direction == Direction.LONG else pos.lowest_since_entry,
                             mae_price=pos.lowest_since_entry if pos.direction == Direction.LONG else pos.highest_since_entry,
                             session_transitions=getattr(pos, 'session_transitions_log', None) or None,
+                        )
+                        self._kit.on_orderbook_context(
+                            pair="NQ",
+                            best_bid=fill_price,
+                            best_ask=fill_price,
+                            trade_context="exit",
+                            related_trade_id=pos.trade_id,
                         )
                     except Exception:
                         pass
