@@ -118,6 +118,7 @@ class PositionState:
     peak_mfe_r: float = 0.0        # max favorable R excursion (for early kill)
     peak_mae_r: float = 0.0        # worst adverse excursion in R-multiples (always >= 0)
     early_warning_bar: int = -1    # bar when early kill warning first triggered (-1 = none)
+    session_transitions_log: list = field(default_factory=list)
 
 
 @dataclass
@@ -139,6 +140,7 @@ class WorkingEntry:
     session: SessionWindow = SessionWindow.RTH
     is_flip: bool = False
     is_addon: bool = False
+    filter_decisions: list[dict] | None = None
 
 
 @dataclass

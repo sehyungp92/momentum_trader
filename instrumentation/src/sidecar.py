@@ -31,6 +31,8 @@ _DIR_TO_EVENT_TYPE = {
     "filter_decisions": "filter_decision",
     "orderbook": "orderbook_context",
     "config_changes": "parameter_change",
+    "snapshots": "market_snapshot",
+    "post_exit": "post_exit",
 }
 
 # Event priority for sorting (#25): lower number = higher priority
@@ -46,6 +48,8 @@ _EVENT_PRIORITY = {
     "indicator_snapshot": 4,
     "filter_decision": 4,
     "orderbook_context": 4,
+    "market_snapshot": 4,
+    "post_exit": 4,
     "heartbeat": 5,
 }
 
@@ -279,6 +283,7 @@ class Sidecar:
 
     def run_once(self):
         """Collect and forward all unsent events, sorted by priority (#25)."""
+        self.cleanup_old_watermarks()
         all_files = self._get_event_files()
 
         # Collect ALL unsent events across all files first (#25)

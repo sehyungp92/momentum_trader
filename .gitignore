@@ -43,6 +43,10 @@ logs/
 *.swo
 *~
 
+# ── Test artifacts (mock leak prevention) ────────────
+MagicMock/
+mock.*/
+
 # ── OS ───────────────────────────────────────────────
 .DS_Store
 Thumbs.db

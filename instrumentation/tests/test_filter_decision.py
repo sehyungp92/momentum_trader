@@ -9,14 +9,14 @@ def test_filter_decision_pass():
     assert d["threshold"] == 3.0
     assert d["actual_value"] == 2.1
     assert d["passed"] is True
-    assert d["margin_pct"] == pytest.approx(30.0, abs=0.1)
+    assert d["margin_pct"] == pytest.approx(-30.0, abs=0.1)
 
 
 def test_filter_decision_fail():
     fd = FilterDecision("spread", threshold=0.50, actual_value=0.75, passed=False)
     d = fd.to_dict()
     assert d["passed"] is False
-    assert d["margin_pct"] == pytest.approx(-50.0, abs=0.1)
+    assert d["margin_pct"] == pytest.approx(50.0, abs=0.1)
 
 
 def test_filter_decision_zero_threshold():

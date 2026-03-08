@@ -153,7 +153,7 @@ class Helix4Engine:
             "threshold": round(cap, 3),
             "actual_value": round(total_risk, 3),
             "passed": total_risk <= cap,
-            "margin_pct": round((cap - total_risk) / cap * 100, 1) if cap > 0 else None,
+            "margin_pct": round((total_risk - cap) / abs(cap) * 100, 1) if cap > 0 else None,
         })
 
         # Spread
@@ -165,7 +165,7 @@ class Helix4Engine:
                 "threshold": round(max_sp, 4),
                 "actual_value": round(spread, 4),
                 "passed": spread <= max_sp,
-                "margin_pct": round((max_sp - spread) / max_sp * 100, 1) if max_sp > 0 else None,
+                "margin_pct": round((spread - max_sp) / abs(max_sp) * 100, 1) if max_sp > 0 else None,
             })
 
         # High vol
@@ -174,7 +174,7 @@ class Helix4Engine:
             "threshold": HIGH_VOL_M_THRESHOLD,
             "actual_value": round(self.vol.vol_pct, 1),
             "passed": self.vol.vol_pct <= HIGH_VOL_M_THRESHOLD,
-            "margin_pct": round((HIGH_VOL_M_THRESHOLD - self.vol.vol_pct) / HIGH_VOL_M_THRESHOLD * 100, 1)
+            "margin_pct": round((self.vol.vol_pct - HIGH_VOL_M_THRESHOLD) / abs(HIGH_VOL_M_THRESHOLD) * 100, 1)
                 if HIGH_VOL_M_THRESHOLD > 0 else None,
         })
 

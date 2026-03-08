@@ -274,6 +274,75 @@ class VdubNQv4Engine:
         except Exception:
             pass
 
+    def _build_gate_filter_decisions(self, direction, qty: int, r_points: float,
+                                     unit_risk: float, sub_window) -> list[dict]:
+        """Build structured filter decisions from current gate state."""
+        decisions = []
+
+        # Heat cap
+        open_risk = self._compute_open_risk()
+        new_risk = r_points * C.NQ_SPEC["point_value"] * qty
+        cap = C.HEAT_CAP_MULT * unit_risk
+        decisions.append({
+            "filter_name": "heat_cap",
+            "threshold": round(cap, 2),
+            "actual_value": round(open_risk + new_risk, 2),
+            "passed": open_risk + new_risk <= cap,
+            "margin_pct": round(((open_risk + new_risk) - cap) / abs(cap) * 100, 1)
+                if cap > 0 else None,
+        })
+
+        # Daily breaker
+        breaker_thresh = C.DAILY_BREAKER_MULT * unit_risk
+        realized = self.counters.daily_realized_pnl
+        decisions.append({
+            "filter_name": "daily_breaker",
+            "threshold": round(breaker_thresh, 2),
+            "actual_value": round(realized, 2),
+            "passed": not self.counters.breaker_hit and realized > breaker_thresh,
+            "margin_pct": round((realized - breaker_thresh) / abs(breaker_thresh) * 100, 1)
+                if breaker_thresh != 0 else None,
+        })
+
+        # Direction cap
+        if direction == Direction.LONG:
+            decisions.append({
+                "filter_name": "long_cap",
+                "threshold": C.MAX_LONGS_PER_DAY,
+                "actual_value": self.counters.long_fills,
+                "passed": self.counters.long_fills < C.MAX_LONGS_PER_DAY,
+                "margin_pct": round((self.counters.long_fills - C.MAX_LONGS_PER_DAY)
+                                    / abs(C.MAX_LONGS_PER_DAY) * 100, 1),
+            })
+        else:
+            decisions.append({
+                "filter_name": "short_cap",
+                "threshold": C.MAX_SHORTS_PER_DAY,
+                "actual_value": self.counters.short_fills,
+                "passed": self.counters.short_fills < C.MAX_SHORTS_PER_DAY,
+                "margin_pct": round((self.counters.short_fills - C.MAX_SHORTS_PER_DAY)
+                                    / abs(C.MAX_SHORTS_PER_DAY) * 100, 1),
+            })
+
+        # Viability (cost/risk ratio)
+        slip_ticks = C.SLIP_TICKS_BY_WINDOW.get(sub_window.value, 1)
+        tick_val = C.NQ_SPEC["tick_value"]
+        slip_cost = slip_ticks * tick_val * qty
+        fees_cost = C.RT_COMM_FEES * qty
+        total_cost = slip_cost + fees_cost
+        risk_usd = r_points * C.NQ_SPEC["point_value"] * qty
+        cost_ratio = total_cost / risk_usd if risk_usd > 0 else float('inf')
+        decisions.append({
+            "filter_name": "viability",
+            "threshold": C.COST_RISK_MAX,
+            "actual_value": round(cost_ratio, 4) if risk_usd > 0 else 0.0,
+            "passed": risk_usd > 0 and cost_ratio <= C.COST_RISK_MAX,
+            "margin_pct": round((cost_ratio - C.COST_RISK_MAX) / abs(C.COST_RISK_MAX) * 100, 1)
+                if C.COST_RISK_MAX > 0 else None,
+        })
+
+        return decisions
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -444,8 +513,6 @@ class VdubNQv4Engine:
                         ur = (pos.entry_price - last_price) / r_pts
                 else:
                     ur = 0.0
-                if not hasattr(pos, 'session_transitions_log'):
-                    pos.session_transitions_log = []
                 pos.session_transitions_log.append({
                     "from_session": self._last_session_window,
                     "to_session": session_name,
@@ -767,10 +834,14 @@ class VdubNQv4Engine:
         if qty < 1:
             return
 
+        # Build filter decisions for instrumentation
+        gate_fds = self._build_gate_filter_decisions(direction, qty, r_points, unit_risk, sub_window)
+
         # Viability (Section 14)
         ok, reason = risk.pass_viability(qty, r_points, sub_window)
         if not ok:
-            self._log_missed(direction, signal_type, _sig_id, f"viability_{reason}", reason)
+            self._log_missed(direction, signal_type, _sig_id, f"viability_{reason}", reason,
+                             filter_decisions=gate_fds)
             return
 
         # Risk gates: heat cap, breaker, direction caps (Section 12.5-12.7)
@@ -779,14 +850,15 @@ class VdubNQv4Engine:
         ok, reason = risk.pass_risk_gates(
             self.counters, direction, open_risk, new_risk, unit_risk)
         if not ok:
-            self._log_missed(direction, signal_type, _sig_id, f"risk_gate_{reason}", reason)
+            self._log_missed(direction, signal_type, _sig_id, f"risk_gate_{reason}", reason,
+                             filter_decisions=gate_fds)
             return
 
         # Submit entry order
         await self._submit_entry(
             direction, qty, stop_entry, limit_entry, initial_stop,
             signal_type, is_flip, is_pyramid, class_mult, vwap_used,
-            session,
+            session, filter_decisions=gate_fds,
         )
 
     # ------------------------------------------------------------------
@@ -1077,6 +1149,7 @@ class VdubNQv4Engine:
         signal_type: EntryType, is_flip: bool, is_pyramid: bool,
         class_mult: float, vwap_used: float,
         session: SessionWindow = SessionWindow.RTH,
+        filter_decisions: list[dict] | None = None,
     ) -> None:
         # Don't submit if we already have working orders
         if self.working_entries:
@@ -1119,6 +1192,7 @@ class VdubNQv4Engine:
             class_mult=class_mult,
             session=session,
             is_flip=is_flip, is_addon=is_pyramid,
+            filter_decisions=filter_decisions,
         )
         self.working_entries[receipt.oms_order_id] = we
 
@@ -1280,10 +1354,11 @@ class VdubNQv4Engine:
                     mae_price=pos.lowest_since_entry if pos.direction == Direction.LONG else pos.highest_since_entry,
                     session_transitions=getattr(pos, 'session_transitions_log', None) or None,
                 )
+                _ba = self._get_bid_ask()
                 self._kit.on_orderbook_context(
                     pair="NQ",
-                    best_bid=price,
-                    best_ask=price,
+                    best_bid=_ba[0] if _ba else price,
+                    best_ask=_ba[1] if _ba else price,
                     trade_context="exit",
                     related_trade_id=pos.trade_id,
                 )
@@ -1438,10 +1513,20 @@ class VdubNQv4Engine:
                         "class_mult": we.class_mult,
                         **config_snapshot,
                     },
+                    filter_decisions=we.filter_decisions,
                     signal_factors=[
                         {"factor_name": "class_mult", "factor_value": we.class_mult,
                          "threshold": 0.0, "contribution": we.class_mult},
                     ],
+                    sizing_inputs={
+                        "unit_risk": risk.compute_unit_risk(self._equity, self.regime.vol_state),
+                        "class_mult": we.class_mult,
+                        "session_mult": C.SESSION_MULT.get(
+                            we.session.value if hasattr(we.session, 'value') else "RTH", 1.0),
+                        "dd_mult": max(0.75, self._throttle.dd_size_mult),
+                        "contracts": fill_qty,
+                        "equity": self._equity,
+                    },
                     session_type=we.session.value if hasattr(we.session, 'value') else str(we.session),
                     concurrent_positions=len(self.positions),
                     drawdown_pct=getattr(self._throttle, 'dd_pct', None),
@@ -1453,10 +1538,11 @@ class VdubNQv4Engine:
                 )
 
                 # Phase 2B: emit orderbook context at entry
+                _ba = self._get_bid_ask()
                 self._kit.on_orderbook_context(
                     pair="NQ",
-                    best_bid=fill_price,
-                    best_ask=fill_price,
+                    best_bid=_ba[0] if _ba else fill_price,
+                    best_ask=_ba[1] if _ba else fill_price,
                     trade_context="entry",
                     related_trade_id=trade_id,
                     exchange_timestamp=fill_time,
@@ -1505,10 +1591,11 @@ class VdubNQv4Engine:
                             mae_price=pos.lowest_since_entry if pos.direction == Direction.LONG else pos.highest_since_entry,
                             session_transitions=getattr(pos, 'session_transitions_log', None) or None,
                         )
+                        _ba = self._get_bid_ask()
                         self._kit.on_orderbook_context(
                             pair="NQ",
-                            best_bid=fill_price,
-                            best_ask=fill_price,
+                            best_bid=_ba[0] if _ba else fill_price,
+                            best_ask=_ba[1] if _ba else fill_price,
                             trade_context="exit",
                             related_trade_id=pos.trade_id,
                         )
@@ -1565,6 +1652,17 @@ class VdubNQv4Engine:
                 if t.contract and t.contract.symbol == "NQ":
                     if t.bid > 0 and t.ask > 0:
                         return (t.ask - t.bid) / C.NQ_SPEC["tick"]
+        except Exception:
+            pass
+        return None
+
+    def _get_bid_ask(self) -> tuple[float, float] | None:
+        """Return (bid, ask) from IB tickers, or None if unavailable."""
+        try:
+            for t in self._ib.ib.tickers():
+                if t.contract and t.contract.symbol == "NQ":
+                    if t.bid > 0 and t.ask > 0:
+                        return (t.bid, t.ask)
         except Exception:
             pass
         return None

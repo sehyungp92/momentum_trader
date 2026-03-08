@@ -457,6 +457,7 @@ class TradeLogger:
                 }
 
                 self._update_trade_event(item["trade_id"], item["file_date"], outcomes)
+                self._emit_post_exit_event(item, outcomes)
                 completed.append(item)
 
             except Exception as e:
@@ -465,6 +466,33 @@ class TradeLogger:
         for c in completed:
             if c in self._pending_exit_backfills:
                 self._pending_exit_backfills.remove(c)
+
+    def _emit_post_exit_event(self, item: dict, outcomes: dict) -> None:
+        """Write a separate post_exit event so the sidecar forwards backfill data to the relay."""
+        try:
+            post_exit_dir = self.data_dir.parent / "post_exit"
+            post_exit_dir.mkdir(parents=True, exist_ok=True)
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            filepath = post_exit_dir / f"post_exit_{today}.jsonl"
+
+            ts = datetime.now(timezone.utc).isoformat()
+            raw = f"{self.bot_id}|{ts}|post_exit|{item['trade_id']}"
+            event_id = hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+            event = {
+                "event_id": event_id,
+                "trade_id": item["trade_id"],
+                "pair": item.get("pair", ""),
+                "side": item.get("side", ""),
+                "exit_price": item.get("exit_price"),
+                "exit_time": item.get("exit_time").isoformat() if item.get("exit_time") else None,
+                "timestamp": ts,
+                **outcomes,
+            }
+            with open(filepath, "a", encoding="utf-8") as f:
+                f.write(json.dumps(event, default=str) + "\n")
+        except Exception as e:
+            logger.debug("Failed to emit post_exit event for %s: %s", item.get("trade_id"), e)
 
     def _update_trade_event(self, trade_id: str, file_date: str, updates: dict) -> None:
         """Update a completed trade event in the JSONL file."""

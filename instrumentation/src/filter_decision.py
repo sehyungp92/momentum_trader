@@ -14,11 +14,15 @@ class FilterDecision:
     passed: bool
 
     def margin_pct(self) -> Optional[float]:
-        """How far inside (positive) or outside (negative) the threshold, as %.
-        Returns None if threshold is zero (boolean filters like news_blocked)."""
+        """How far actual is from threshold as %.
+
+        Positive = actual exceeds threshold, negative = actual below threshold.
+        Matches trading_assistant convention: (actual - threshold) / |threshold|.
+        Returns None if threshold is zero (boolean filters like news_blocked).
+        """
         if self.threshold == 0.0:
             return None
-        return round((self.threshold - self.actual_value) / self.threshold * 100, 2)
+        return round((self.actual_value - self.threshold) / abs(self.threshold) * 100, 2)
 
     def to_dict(self) -> dict:
         return {

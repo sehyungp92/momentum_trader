@@ -37,19 +37,24 @@ class InstrumentationKit:
         self._indicator_logger = None
         self._filter_event_logger = None
         self._orderbook_logger = None
+        self._data_dir: Path | None = None
         if manager:
             try:
-                config = getattr(manager, '_config', {})
+                config = getattr(manager, '_config', None)
+                if not isinstance(config, dict):
+                    config = {}
                 self._experiment_id = config.get("experiment_id")
                 self._experiment_variant = config.get("experiment_variant")
-                data_dir = config.get("data_dir", "instrumentation/data")
+                data_dir = config.get("data_dir")
                 bot_id = config.get("bot_id", "")
-                from .indicator_logger import IndicatorLogger
-                from .filter_event_logger import FilterEventLogger
-                from .orderbook_logger import OrderBookLogger
-                self._indicator_logger = IndicatorLogger(data_dir=data_dir, bot_id=bot_id)
-                self._filter_event_logger = FilterEventLogger(data_dir=data_dir, bot_id=bot_id)
-                self._orderbook_logger = OrderBookLogger(data_dir=data_dir, bot_id=bot_id)
+                if data_dir and isinstance(data_dir, (str, Path)):
+                    self._data_dir = Path(data_dir)
+                    from .indicator_logger import IndicatorLogger
+                    from .filter_event_logger import FilterEventLogger
+                    from .orderbook_logger import OrderBookLogger
+                    self._indicator_logger = IndicatorLogger(data_dir=data_dir, bot_id=bot_id)
+                    self._filter_event_logger = FilterEventLogger(data_dir=data_dir, bot_id=bot_id)
+                    self._orderbook_logger = OrderBookLogger(data_dir=data_dir, bot_id=bot_id)
             except Exception:
                 pass
 
@@ -347,8 +352,9 @@ class InstrumentationKit:
             if diag:
                 heartbeat_data["sidecar"] = diag
 
-            data_dir = Path(self._mgr._config.get("data_dir", "instrumentation/data"))
-            hb_dir = data_dir / "heartbeats"
+            if not self._data_dir:
+                return
+            hb_dir = self._data_dir / "heartbeats"
             hb_dir.mkdir(parents=True, exist_ok=True)
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             filepath = hb_dir / f"heartbeat_{today}.jsonl"

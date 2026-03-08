@@ -1801,10 +1801,11 @@ class NQDTCEngine:
                     mae_price=pos.lowest_since_entry if pos.direction == Direction.LONG else pos.highest_since_entry,
                     session_transitions=self._session_transitions or None,
                 )
+                _ba = self._get_bid_ask()
                 self._kit.on_orderbook_context(
                     pair=self._symbol,
-                    best_bid=est_exit,
-                    best_ask=est_exit,
+                    best_bid=_ba[0] if _ba else est_exit,
+                    best_ask=_ba[1] if _ba else est_exit,
                     trade_context="exit",
                     related_trade_id=self._instr_trade_id,
                 )
@@ -1824,6 +1825,61 @@ class NQDTCEngine:
         elif mult >= 0.25:
             return "quarter"
         return "halt"
+
+    def _build_gate_filter_decisions(self, now_ny, r_points: float) -> list[dict]:
+        """Build structured filter decisions from current gate state."""
+        decisions = []
+        MIN_STOP_DISTANCE = 3.0
+
+        # Daily risk halt
+        realized_r = getattr(self._daily_risk, 'realized_pnl_R', 0.0)
+        decisions.append({
+            "filter_name": "daily_risk_halted",
+            "threshold": C.DAILY_STOP_R,
+            "actual_value": round(realized_r, 3),
+            "passed": not self._daily_risk.halted,
+            "margin_pct": round((realized_r - C.DAILY_STOP_R) / abs(C.DAILY_STOP_R) * 100, 1)
+                if C.DAILY_STOP_R != 0 else None,
+        })
+
+        # Min stop distance
+        decisions.append({
+            "filter_name": "MIN_STOP_DISTANCE",
+            "threshold": MIN_STOP_DISTANCE,
+            "actual_value": round(r_points, 2),
+            "passed": r_points >= MIN_STOP_DISTANCE,
+            "margin_pct": round((r_points - MIN_STOP_DISTANCE) / abs(MIN_STOP_DISTANCE) * 100, 1),
+        })
+
+        # Hour blocks
+        hour = now_ny.hour
+        decisions.append({
+            "filter_name": "BLOCK_06_ET",
+            "threshold": 0.0,
+            "actual_value": hour,
+            "passed": not (C.BLOCK_06_ET and hour == 6),
+            "margin_pct": None,
+        })
+        decisions.append({
+            "filter_name": "BLOCK_12_ET",
+            "threshold": 0.0,
+            "actual_value": hour,
+            "passed": not (C.BLOCK_12_ET and hour == 12),
+            "margin_pct": None,
+        })
+
+        return decisions
+
+    def _get_bid_ask(self) -> tuple[float, float] | None:
+        """Return (bid, ask) from IB tickers, or None if unavailable."""
+        try:
+            for t in self._ib.ib.tickers():
+                if t.contract and t.contract.symbol == "NQ":
+                    if t.bid > 0 and t.ask > 0:
+                        return (t.bid, t.ask)
+        except Exception:
+            pass
+        return None
 
     def _clear_position(self) -> None:
         """Reset position state."""
@@ -1925,10 +1981,11 @@ class NQDTCEngine:
                             mae_price=self._position.lowest_since_entry if self._position.direction == Direction.LONG else self._position.highest_since_entry,
                             session_transitions=self._session_transitions or None,
                         )
+                        _ba = self._get_bid_ask()
                         self._kit.on_orderbook_context(
                             pair=self._symbol,
-                            best_bid=price,
-                            best_ask=price,
+                            best_bid=_ba[0] if _ba else price,
+                            best_ask=_ba[1] if _ba else price,
                             trade_context="exit",
                             related_trade_id=self._instr_trade_id,
                         )
@@ -2111,7 +2168,11 @@ class NQDTCEngine:
                         {"factor_name": "quality_mult", "factor_value": wo.quality_mult,
                          "threshold": 0.0, "contribution": wo.quality_mult},
                     ],
-                    sizing_inputs={"quality_mult": wo.quality_mult, "contracts": qty},
+                    filter_decisions=self._build_gate_filter_decisions(now_ny, r_points),
+                    sizing_inputs={"quality_mult": wo.quality_mult, "contracts": qty,
+                                   "dd_mult": getattr(self._throttle, 'dd_size_mult', 1.0),
+                                   "equity": getattr(self, '_equity', None),
+                                   "final_risk_pct": round(r_points * qty / self._equity * 100, 2) if getattr(self, '_equity', 0) else None},
                     concurrent_positions=1 if self._position.open else 0,
                     drawdown_pct=getattr(self._throttle, 'dd_pct', None),
                     drawdown_tier=self._dd_tier_name(),
@@ -2122,10 +2183,11 @@ class NQDTCEngine:
                 )
 
                 # Phase 2B: emit orderbook context at entry
+                _ba = self._get_bid_ask()
                 self._kit.on_orderbook_context(
                     pair=self._symbol,
-                    best_bid=price,
-                    best_ask=price,
+                    best_bid=_ba[0] if _ba else price,
+                    best_ask=_ba[1] if _ba else price,
                     trade_context="entry",
                     related_trade_id=oms_id,
                     exchange_timestamp=now_ny,

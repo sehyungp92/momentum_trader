@@ -14,6 +14,13 @@ from .config_snapshot import snapshot_config_module
 logger = logging.getLogger("instrumentation.config_watcher")
 
 
+_SAFETY_CRITICAL_PARAMS = {
+    "risk_per_trade", "max_position_size", "kill_switch_enabled",
+    "trailing_stop_pct", "max_drawdown_pct", "leverage_limit",
+    "HEAT_CAP_R", "DAILY_STOP_R", "WEEKLY_STOP_R", "MAX_POSITION_R",
+}
+
+
 class ConfigWatcher:
     """Monitors strategy config modules for parameter changes.
 
@@ -100,6 +107,8 @@ class ConfigWatcher:
             "param_name": param_name,
             "old_value": old_value,
             "new_value": new_value,
+            "change_source": "hot_reload",
+            "is_safety_critical": param_name in _SAFETY_CRITICAL_PARAMS,
         }
 
     def _write_event(self, event: dict) -> None:
