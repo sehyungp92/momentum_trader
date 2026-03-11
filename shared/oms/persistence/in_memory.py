@@ -65,6 +65,15 @@ class InMemoryRepository:
                 return order.oms_order_id
         return None
 
+    async def get_order_id_by_broker_order_id(
+        self, broker_order_id: int
+    ) -> Optional[str]:
+        """Resolve an OMS order ID from a broker order ID."""
+        for order in self._orders.values():
+            if order.broker_order_id == broker_order_id:
+                return order.oms_order_id
+        return None
+
     async def get_pending_entry_risk_R(self, unit_risk_dollars: float) -> float:
         """Sum risk_R of working ENTRY orders."""
         working_statuses = {

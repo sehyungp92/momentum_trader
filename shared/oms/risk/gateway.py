@@ -1,4 +1,5 @@
 """Risk gateway for pre-trade checks."""
+import math
 import logging
 from datetime import datetime, timezone
 from typing import Callable, Awaitable, Optional
@@ -31,6 +32,41 @@ class RiskGateway:
         self._get_working_count = get_working_order_count
         self._portfolio_checker = portfolio_checker
 
+    @staticmethod
+    def _validate_entry_order(order: OMSOrder) -> Optional[str]:
+        """Reject malformed entries before they can distort live risk state."""
+        if order.qty <= 0:
+            return f"ENTRY qty must be positive: {order.qty}"
+
+        instrument = order.instrument
+        if not instrument:
+            return "Order missing instrument"
+        if not math.isfinite(instrument.point_value) or instrument.point_value <= 0:
+            return f"Instrument point_value must be positive: {instrument.point_value}"
+
+        risk_ctx = order.risk_context
+        if risk_ctx is None:
+            return "ENTRY order missing risk_context"
+
+        planned_entry = risk_ctx.planned_entry_price
+        stop_for_risk = risk_ctx.stop_for_risk
+        if not math.isfinite(planned_entry) or not math.isfinite(stop_for_risk):
+            return "ENTRY risk prices must be finite"
+        if planned_entry <= 0 or stop_for_risk <= 0:
+            return (
+                "ENTRY risk prices must be positive: "
+                f"entry={planned_entry} stop={stop_for_risk}"
+            )
+
+        risk_per_contract = abs(planned_entry - stop_for_risk) * instrument.point_value
+        if not math.isfinite(risk_per_contract) or risk_per_contract <= 0:
+            return (
+                "ENTRY risk distance must be positive: "
+                f"entry={planned_entry} stop={stop_for_risk}"
+            )
+
+        return None
+
     async def check_entry(self, order: OMSOrder) -> Optional[str]:
         """Returns denial reason string, or None if approved."""
         # Exits/stops always allowed
@@ -44,6 +80,15 @@ class RiskGateway:
         strat_cfg = self._config.strategy_configs.get(order.strategy_id)
         if not strat_cfg:
             return f"No risk config for strategy {order.strategy_id}"
+
+        validation_error = self._validate_entry_order(order)
+        if validation_error:
+            return validation_error
+        if not math.isfinite(strat_cfg.unit_risk_dollars) or strat_cfg.unit_risk_dollars <= 0:
+            return (
+                "Strategy unit_risk_dollars must be positive: "
+                f"{strat_cfg.unit_risk_dollars}"
+            )
 
         now_utc = datetime.now(timezone.utc)
 
@@ -93,9 +138,6 @@ class RiskGateway:
 
         # 6. Heat cap check
         instrument = order.instrument
-        if not instrument:
-            return "Order missing instrument"
-
         risk_ctx = order.risk_context
         risk_per_contract = (
             abs(risk_ctx.planned_entry_price - risk_ctx.stop_for_risk)

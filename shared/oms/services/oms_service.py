@@ -1,7 +1,7 @@
 """Main OMS service."""
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 if TYPE_CHECKING:
     from ..intent.handler import IntentHandler
@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from ..reconciliation.orchestrator import ReconciliationOrchestrator
     from ..engine.timeout_monitor import OrderTimeoutMonitor
     from ..models.intent import Intent, IntentReceipt
+    from ..models.risk_state import PortfolioRiskState, StrategyRiskState
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,8 @@ class OMSService:
         router: "ExecutionRouter" = None,
         recon_interval_s: float = 120.0,
         timeout_monitor: "OrderTimeoutMonitor | None" = None,
+        get_portfolio_risk: "Callable[[], Awaitable[PortfolioRiskState]] | None" = None,
+        get_strategy_risk: "Callable[[str], Awaitable[StrategyRiskState]] | None" = None,
     ):
         self._handler = intent_handler
         self._bus = bus
@@ -32,6 +35,8 @@ class OMSService:
         self._router = router
         self._recon_interval = recon_interval_s
         self._timeout_monitor = timeout_monitor
+        self._get_portfolio_risk = get_portfolio_risk
+        self._get_strategy_risk = get_strategy_risk
         self._ready = asyncio.Event()
         self._recon_task: asyncio.Task | None = None
 
@@ -79,6 +84,16 @@ class OMSService:
     def stream_all_events(self) -> "asyncio.Queue":
         """For dashboard/logging — receives all events."""
         return self._bus.subscribe_all()
+
+    async def get_portfolio_risk(self) -> "PortfolioRiskState":
+        if self._get_portfolio_risk is None:
+            raise RuntimeError("Portfolio risk provider is not configured")
+        return await self._get_portfolio_risk()
+
+    async def get_strategy_risk(self, strategy_id: str) -> "StrategyRiskState":
+        if self._get_strategy_risk is None:
+            raise RuntimeError("Strategy risk provider is not configured")
+        return await self._get_strategy_risk(strategy_id)
 
     async def _periodic_recon_loop(self) -> None:
         while True:

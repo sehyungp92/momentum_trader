@@ -44,6 +44,13 @@ class TestSidecar:
         sidecar = Sidecar(self.config)
         assert sidecar.buffer_dir.exists()
 
+    def test_relay_url_normalized_to_events_endpoint(self):
+        config = dict(self.config)
+        config["sidecar"] = dict(config["sidecar"])
+        config["sidecar"]["relay_url"] = "http://relay.local"
+        sidecar = Sidecar(config)
+        assert sidecar.relay_url == "http://relay.local/events"
+
     def test_watermarks_persist(self):
         sidecar = Sidecar(self.config)
         sidecar.watermarks["test_file"] = 5

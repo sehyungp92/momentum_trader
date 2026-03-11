@@ -2132,7 +2132,7 @@ class NQDTCEngine:
                 # Capture portfolio state at entry (G4)
                 portfolio_state = None
                 try:
-                    risk_state = self._oms.get_portfolio_risk()
+                    risk_state = await self._oms.get_portfolio_risk()
                     portfolio_state = {
                         "total_exposure_r": risk_state.open_risk_R,
                         "daily_realized_pnl": risk_state.daily_realized_pnl,

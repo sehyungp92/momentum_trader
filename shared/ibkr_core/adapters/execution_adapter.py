@@ -15,6 +15,7 @@ from ..mapping.order_mapper import OrderMapper
 from ..models.types import (
     BrokerOrderRef,
     ExecutionReport,
+    IBContractSpec,
     OrderStatusEvent,
     PositionSnapshot,
 )
@@ -121,6 +122,7 @@ class IBKRExecutionAdapter:
             con_id=contract.conId,
         )
         self._cache.register_order(oms_order_id, ref.broker_order_id, ref.perm_id)
+        self._cache.contracts[spec.con_id] = spec
         return ref
 
     async def cancel_order(self, broker_order_id: int, perm_id: int = 0) -> None:
@@ -164,15 +166,41 @@ class IBKRExecutionAdapter:
         raise OrderNotFoundError(f"Order {broker_order_id} not found")
 
     async def request_open_orders(self) -> list[OrderStatusEvent]:
+        await self._session.throttled(PacingChannel.ORDERS)
         return await self._snapshots.fetch_open_orders()
 
     async def request_positions(self) -> list[PositionSnapshot]:
-        return await self._snapshots.fetch_positions()
+        await self._session.throttled(PacingChannel.ORDERS)
+        positions = await self._snapshots.fetch_positions()
+        for position in positions:
+            self._cache.contracts.setdefault(
+                position.con_id,
+                IBContractSpec(
+                    con_id=position.con_id,
+                    symbol=position.symbol,
+                    sec_type="",
+                    exchange="",
+                    currency="USD",
+                    multiplier=0.0,
+                    tick_size=0.0,
+                    trading_class="",
+                    last_trade_date="",
+                ),
+            )
+        return positions
 
     async def request_executions(
         self, since_ts: datetime | None = None
     ) -> list[ExecutionReport]:
+        await self._session.throttled(PacingChannel.ORDERS)
         return await self._snapshots.fetch_executions(since_ts)
+
+    async def rebuild_cache(self, oms_order_id_resolver) -> None:
+        """Restore broker/OMS order mappings after a restart."""
+        await self._cache.rebuild_from_broker(
+            self._snapshots,
+            oms_order_id_resolver=oms_order_id_resolver,
+        )
 
     @property
     def is_ready(self) -> bool:

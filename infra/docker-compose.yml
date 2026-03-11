@@ -10,6 +10,7 @@ services:
     env_file:
       - ../.env
     environment:
+      IB_CLIENT_ID: ${IB_CLIENT_ID_HELIX:-11}
       INSTRUMENTATION_RELAY_URL: "http://host.docker.internal:8001/events"
       INSTRUMENTATION_HMAC_SECRET: ${INSTRUMENTATION_HMAC_SECRET:-}
     volumes:
@@ -30,6 +31,7 @@ services:
     env_file:
       - ../.env
     environment:
+      IB_CLIENT_ID: ${IB_CLIENT_ID_NQDTC:-12}
       INSTRUMENTATION_RELAY_URL: "http://host.docker.internal:8001/events"
       INSTRUMENTATION_HMAC_SECRET: ${INSTRUMENTATION_HMAC_SECRET:-}
     volumes:
@@ -50,6 +52,7 @@ services:
     env_file:
       - ../.env
     environment:
+      IB_CLIENT_ID: ${IB_CLIENT_ID_VDUBUS:-13}
       INSTRUMENTATION_RELAY_URL: "http://host.docker.internal:8001/events"
       INSTRUMENTATION_HMAC_SECRET: ${INSTRUMENTATION_HMAC_SECRET:-}
     volumes:

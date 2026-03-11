@@ -31,6 +31,39 @@ def _default_symbols(strategy: str) -> list[str]:
     return ["NQ"]
 
 
+def _log_live_parity_caveats(strategy: str, fixed_qty: int | None) -> None:
+    """Make non-live-equivalent assumptions explicit in single-strategy runs."""
+    if fixed_qty not in (None, 0):
+        logger.warning(
+            "%s backtest is not live-equivalent: --fixed-qty=%s bypasses live risk-based sizing. "
+            "Use --fixed-qty 0 to keep backtest sizing closer to live.",
+            strategy,
+            fixed_qty,
+        )
+
+    logger.warning(
+        "%s single-strategy backtest bypasses live OMS entry gating "
+        "(daily/weekly stops, heat cap, working-order limits, portfolio rules).",
+        strategy,
+    )
+
+    if strategy == "Helix":
+        logger.warning(
+            "Helix backtest defaults also differ from live config: ETH_EUROPE and "
+            "RTH_DEAD sizing enhancements are off unless explicitly enabled."
+        )
+    elif strategy == "NQDTC":
+        logger.warning(
+            "NQDTC backtest still models B-sweep as MARKET, while live submits it "
+            "as a marketable IOC LIMIT."
+        )
+    elif strategy == "Vdubus":
+        logger.warning(
+            "Vdubus backtest uses a single active position model, while live can "
+            "carry same-direction add-ons/pyramids."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Data loaders
 # ---------------------------------------------------------------------------
@@ -312,6 +345,8 @@ def _cmd_run_nqdtc(args):
     data_dir = Path(args.data_dir)
     nqdtc_data = _load_nqdtc_data(symbol, data_dir)  # loads NQ_5m.parquet
 
+    _log_live_parity_caveats("NQDTC", args.fixed_qty)
+
     config = NQDTCBacktestConfig(
         symbols=["MNQ"],
         start_date=datetime.fromisoformat(args.start) if args.start else None,
@@ -544,6 +579,8 @@ def _cmd_run_vdubus(args):
     data_dir = Path(args.data_dir)
     include_5m = getattr(args, 'micro_trigger', False)
     vdubus_data = _load_vdubus_data(symbol, data_dir, include_5m=include_5m)
+
+    _log_live_parity_caveats("Vdubus", args.fixed_qty)
 
     # Patch strategy_3 config for MNQ (micro contract)
     orig_nq_spec = dict(C.NQ_SPEC)
@@ -842,6 +879,8 @@ def _cmd_run_helix(args):
     symbol = args.symbols
     data_dir = Path(args.data_dir)
     helix_data = _load_helix_data(symbol, data_dir)
+
+    _log_live_parity_caveats("Helix", args.fixed_qty or None)
 
     config = Helix4BacktestConfig(
         symbols=[symbol],

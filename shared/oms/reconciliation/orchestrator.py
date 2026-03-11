@@ -33,6 +33,13 @@ class ReconciliationOrchestrator:
         """
         logger.info("Starting reconciliation...")
 
+        # Rebuild broker->OMS order mappings first so fills/cancels remain routable
+        # after a process restart.
+        try:
+            await self._adapter.rebuild_cache(self._repo.get_order_id_by_broker_order_id)
+        except Exception as e:
+            logger.warning("Cache rebuild before reconciliation failed: %s", e)
+
         # Fetch broker state
         broker_orders = await self._adapter.request_open_orders()
         broker_positions = await self._adapter.request_positions()
@@ -98,6 +105,8 @@ class ReconciliationOrchestrator:
                 oms_broker_id = d.details.get("oms_broker_order_id")
                 if oms_broker_id is not None:
                     oms_id = self._adapter.cache.lookup_oms_id(oms_broker_id)
+                    if not oms_id:
+                        oms_id = await self._repo.get_order_id_by_broker_order_id(oms_broker_id)
                     if oms_id:
                         order = await self._repo.get_order(oms_id)
                         if order:

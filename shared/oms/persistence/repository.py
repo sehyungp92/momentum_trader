@@ -134,6 +134,18 @@ class OMSRepository:
             )
         return row["oms_order_id"] if row else None
 
+    async def get_order_id_by_broker_order_id(
+        self, broker_order_id: int
+    ) -> Optional[str]:
+        """Resolve an OMS order ID from a persisted broker order ID."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT oms_order_id FROM orders
+                   WHERE broker_order_id = $1::text""",
+                str(broker_order_id),
+            )
+        return row["oms_order_id"] if row else None
+
     async def get_pending_entry_risk_R(self, unit_risk_dollars: float) -> float:
         """Sum risk_R of working ENTRY orders. Includes PARTIALLY_FILLED scaled by remaining qty."""
         working_statuses = (

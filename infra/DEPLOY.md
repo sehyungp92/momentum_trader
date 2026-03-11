@@ -45,16 +45,22 @@ Key values:
 
 | Variable | Value | Notes |
 |----------|-------|-------|
-| `SWING_TRADER_ENV` | `paper` or `live` | Trading mode |
+| `ALGO_TRADER_ENV` | `paper` or `live` | Trading mode |
 | `IB_ACCOUNT_ID` | `DU1234567` | Your IBKR account |
 | `IB_HOST` | `host.docker.internal` | Reaches host IB Gateway from container |
 | `IB_PORT` | `4002` | Paper: 4002, Live: 4001 |
 | `IB_CLIENT_ID_HELIX` | `11` | Unique per strategy |
 | `IB_CLIENT_ID_NQDTC` | `12` | Unique per strategy |
 | `IB_CLIENT_ID_VDUBUS` | `13` | Unique per strategy |
-| `POSTGRES_HOST` | `trading_postgres` | Container name on trading_net |
-| `POSTGRES_PORT` | `5432` | |
-| `POSTGRES_PASSWORD` | (match swing_trader) | Same DB cluster |
+| `DB_HOST` | `trading_postgres` | Container name on trading_net |
+| `DB_PORT` | `5432` | |
+| `DB_NAME` | `trading` | Shared database name |
+| `DB_USER` | `trading_writer` | Shared database user |
+| `DB_PASSWORD` | (match swing_trader) | Same DB cluster |
+
+The compose file injects `IB_CLIENT_ID_HELIX`, `IB_CLIENT_ID_NQDTC`, and
+`IB_CLIENT_ID_VDUBUS` into each container as `IB_CLIENT_ID`, so the three
+strategies can run against one IB Gateway without client-ID collisions.
 
 ```bash
 chmod 600 .env

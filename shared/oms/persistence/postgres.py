@@ -591,6 +591,54 @@ class PgStore:
             last_update_at=r["last_update_at"],
         )
 
+    async def get_risk_daily_strategies_for_date(
+        self,
+        trade_date: date,
+    ) -> list[RiskDailyStrategyRow]:
+        rows = await self._pool.fetch(
+            """
+            SELECT * FROM risk_daily_strategy
+            WHERE trade_date = $1
+            ORDER BY strategy_id
+            """,
+            trade_date,
+        )
+        return [
+            RiskDailyStrategyRow(
+                trade_date=r["trade_date"],
+                strategy_id=r["strategy_id"],
+                daily_realized_r=r["daily_realized_r"],
+                daily_realized_usd=r["daily_realized_usd"],
+                open_risk_r=r["open_risk_r"],
+                filled_entries=r["filled_entries"],
+                halted=r["halted"],
+                halt_reason=r["halt_reason"],
+                last_update_at=r["last_update_at"],
+            )
+            for r in rows
+        ]
+
+    async def get_risk_daily_strategy_totals(
+        self,
+        start_date: date,
+        end_date: date,
+    ) -> dict[str, Decimal]:
+        row = await self._pool.fetchrow(
+            """
+            SELECT
+                COALESCE(SUM(daily_realized_r), 0) AS total_r,
+                COALESCE(SUM(daily_realized_usd), 0) AS total_usd
+            FROM risk_daily_strategy
+            WHERE trade_date BETWEEN $1 AND $2
+            """,
+            start_date,
+            end_date,
+        )
+        return {
+            "total_r": row["total_r"] if row else Decimal("0"),
+            "total_usd": row["total_usd"] if row else Decimal("0"),
+        }
+
     async def halt_strategy(self, strategy_id: str, reason: str, trade_date: date) -> None:
         await self._pool.execute(
             """
@@ -627,6 +675,26 @@ class PgStore:
             row.halted,
             row.halt_reason,
             row.last_update_at,
+        )
+
+    async def get_risk_daily_portfolio(
+        self,
+        trade_date: date,
+    ) -> Optional[RiskDailyPortfolioRow]:
+        r = await self._pool.fetchrow(
+            "SELECT * FROM risk_daily_portfolio WHERE trade_date = $1",
+            trade_date,
+        )
+        if r is None:
+            return None
+        return RiskDailyPortfolioRow(
+            trade_date=r["trade_date"],
+            daily_realized_r=r["daily_realized_r"],
+            daily_realized_usd=r["daily_realized_usd"],
+            portfolio_open_risk_r=r["portfolio_open_risk_r"],
+            halted=r["halted"],
+            halt_reason=r["halt_reason"],
+            last_update_at=r["last_update_at"],
         )
 
     async def halt_portfolio(self, reason: str, trade_date: date) -> None:

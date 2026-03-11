@@ -1,7 +1,8 @@
 """OMS factory for proper initialization with all dependencies."""
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -16,13 +17,87 @@ from ..models.order import OrderRole, OrderSide
 from ..models.position import Position
 from ..models.risk_state import StrategyRiskState, PortfolioRiskState
 from ..persistence.in_memory import InMemoryRepository
+from ..persistence.postgres import PgStore
 from ..persistence.repository import OMSRepository
+from ..persistence.schema import RiskDailyPortfolioRow, RiskDailyStrategyRow
 from ..reconciliation.orchestrator import ReconciliationOrchestrator
 from ..risk.calendar import EventCalendar
 from ..risk.gateway import RiskGateway
 from .oms_service import OMSService
 
 logger = logging.getLogger(__name__)
+
+
+def _to_decimal(value: float) -> Decimal:
+    """Convert float state values to stable decimal strings for persistence."""
+    return Decimal(str(value))
+
+
+def _week_start(trade_day: date) -> date:
+    """Mirror the existing Monday-based OMS weekly reset semantics."""
+    return trade_day - timedelta(days=trade_day.weekday())
+
+
+def _aggregate_strategy_daily_rows(
+    rows: list[RiskDailyStrategyRow],
+) -> tuple[float, float, dict[str, float]]:
+    daily_realized_r = 0.0
+    daily_realized_usd = 0.0
+    strategy_daily_pnl: dict[str, float] = {}
+
+    for row in rows:
+        realized_r = float(row.daily_realized_r)
+        realized_usd = float(row.daily_realized_usd or 0)
+        daily_realized_r += realized_r
+        daily_realized_usd += realized_usd
+        strategy_daily_pnl[row.strategy_id] = realized_usd
+
+    return daily_realized_r, daily_realized_usd, strategy_daily_pnl
+
+
+def _build_strategy_daily_row(
+    state: StrategyRiskState,
+    existing_row: RiskDailyStrategyRow | None,
+    as_of: datetime,
+) -> RiskDailyStrategyRow:
+    return RiskDailyStrategyRow(
+        trade_date=state.trade_date,
+        strategy_id=state.strategy_id,
+        daily_realized_r=_to_decimal(state.daily_realized_R),
+        daily_realized_usd=_to_decimal(state.daily_realized_pnl),
+        open_risk_r=_to_decimal(state.open_risk_R),
+        filled_entries=existing_row.filled_entries if existing_row else 0,
+        halted=state.halted or (existing_row.halted if existing_row else False),
+        halt_reason=state.halt_reason or (existing_row.halt_reason if existing_row else None),
+        last_update_at=as_of,
+    )
+
+
+def _build_portfolio_daily_row(
+    trade_date: date,
+    daily_rows: list[RiskDailyStrategyRow],
+    open_risk_r: float,
+    existing_row: RiskDailyPortfolioRow | None,
+    as_of: datetime,
+) -> RiskDailyPortfolioRow:
+    if daily_rows:
+        daily_realized_r, daily_realized_usd, _ = _aggregate_strategy_daily_rows(daily_rows)
+    elif existing_row is not None:
+        daily_realized_r = float(existing_row.daily_realized_r)
+        daily_realized_usd = float(existing_row.daily_realized_usd or 0)
+    else:
+        daily_realized_r = 0.0
+        daily_realized_usd = 0.0
+
+    return RiskDailyPortfolioRow(
+        trade_date=trade_date,
+        daily_realized_r=_to_decimal(daily_realized_r),
+        daily_realized_usd=_to_decimal(daily_realized_usd),
+        portfolio_open_risk_r=_to_decimal(open_risk_r),
+        halted=existing_row.halted if existing_row else False,
+        halt_reason=existing_row.halt_reason if existing_row else None,
+        last_update_at=as_of,
+    )
 
 
 def _make_portfolio_rule_logger(data_dir: str = "instrumentation/data") -> Callable:
@@ -101,11 +176,146 @@ async def build_oms_service(
         calendar = EventCalendar()
 
     # Risk state providers
-    from datetime import date
     strategy_risk_states: dict[str, StrategyRiskState] = {}
     portfolio_risk_state = PortfolioRiskState(trade_date=date.today())
+    pg_store = PgStore(db_pool) if db_pool is not None else None
     # Track open positions per strategy for exit P&L computation
     open_positions: dict[str, dict] = {}
+
+    async def _sync_strategy_risk_from_repo(state: StrategyRiskState) -> None:
+        if db_pool is None:
+            return
+        positions = await repo.get_positions(state.strategy_id)
+        if not positions:
+            state.daily_realized_pnl = 0.0
+            state.daily_realized_R = 0.0
+            state.open_risk_dollars = 0.0
+            state.open_risk_R = 0.0
+            return
+
+        latest_ts = datetime.min.replace(tzinfo=timezone.utc)
+        latest_pos = None
+        for pos in positions:
+            pos_ts = pos.last_update_at or latest_ts
+            if pos_ts >= latest_ts:
+                latest_ts = pos_ts
+                latest_pos = pos
+
+        if latest_pos and latest_pos.last_update_at and latest_pos.last_update_at.date() == state.trade_date:
+            state.daily_realized_pnl = latest_pos.realized_pnl
+            state.daily_realized_R = (
+                latest_pos.realized_pnl / unit_risk_dollars if unit_risk_dollars > 0 else 0.0
+            )
+        else:
+            state.daily_realized_pnl = 0.0
+            state.daily_realized_R = 0.0
+
+        open_positions_for_strategy = [p for p in positions if p.net_qty != 0]
+        state.open_risk_dollars = max(
+            (p.open_risk_dollars for p in open_positions_for_strategy),
+            default=0.0,
+        )
+        state.open_risk_R = max(
+            (p.open_risk_R for p in open_positions_for_strategy),
+            default=0.0,
+        )
+
+    async def _load_strategy_risk_from_store(state: StrategyRiskState) -> RiskDailyStrategyRow | None:
+        if pg_store is None:
+            return None
+        row = await pg_store.get_risk_daily_strategy(state.strategy_id, state.trade_date)
+        if row is None:
+            return None
+        state.daily_realized_R = float(row.daily_realized_r)
+        if row.daily_realized_usd is not None:
+            state.daily_realized_pnl = float(row.daily_realized_usd)
+        state.halted = row.halted
+        state.halt_reason = row.halt_reason or ""
+        return row
+
+    async def _persist_strategy_risk_state(
+        state: StrategyRiskState,
+        as_of: datetime,
+    ) -> None:
+        if pg_store is None:
+            return
+        existing_row = await pg_store.get_risk_daily_strategy(state.strategy_id, state.trade_date)
+        await pg_store.upsert_risk_daily_strategy(
+            _build_strategy_daily_row(state, existing_row, as_of)
+        )
+
+    async def _sync_portfolio_open_risk_from_repo() -> None:
+        if db_pool is None:
+            return
+        positions = await repo.get_all_positions()
+        per_strategy_open_risk_dollars: dict[str, float] = {}
+        per_strategy_open_risk_R: dict[str, float] = {}
+        for pos in positions:
+            if pos.net_qty == 0:
+                continue
+            per_strategy_open_risk_dollars[pos.strategy_id] = max(
+                per_strategy_open_risk_dollars.get(pos.strategy_id, 0.0),
+                pos.open_risk_dollars,
+            )
+            per_strategy_open_risk_R[pos.strategy_id] = max(
+                per_strategy_open_risk_R.get(pos.strategy_id, 0.0),
+                pos.open_risk_R,
+            )
+        portfolio_risk_state.open_risk_dollars = sum(per_strategy_open_risk_dollars.values())
+        portfolio_risk_state.open_risk_R = sum(per_strategy_open_risk_R.values())
+
+    async def _load_portfolio_risk_from_store(trade_day: date) -> None:
+        if pg_store is None:
+            return
+
+        today_rows = await pg_store.get_risk_daily_strategies_for_date(trade_day)
+        today_portfolio_row = await pg_store.get_risk_daily_portfolio(trade_day)
+
+        if today_rows:
+            daily_realized_r, daily_realized_usd, strategy_daily_pnl = _aggregate_strategy_daily_rows(today_rows)
+            portfolio_risk_state.daily_realized_R = daily_realized_r
+            portfolio_risk_state.daily_realized_pnl = daily_realized_usd
+            portfolio_risk_state.strategy_daily_pnl = strategy_daily_pnl
+        elif today_portfolio_row is not None:
+            portfolio_risk_state.daily_realized_R = float(today_portfolio_row.daily_realized_r)
+            portfolio_risk_state.daily_realized_pnl = float(today_portfolio_row.daily_realized_usd or 0)
+            portfolio_risk_state.strategy_daily_pnl = {}
+        else:
+            portfolio_risk_state.daily_realized_R = 0.0
+            portfolio_risk_state.daily_realized_pnl = 0.0
+            portfolio_risk_state.strategy_daily_pnl = {}
+
+        totals = await pg_store.get_risk_daily_strategy_totals(_week_start(trade_day), trade_day)
+        portfolio_risk_state.weekly_realized_R = float(totals["total_r"])
+        portfolio_risk_state.weekly_realized_pnl = float(totals["total_usd"])
+        if (
+            today_portfolio_row is not None
+            and not today_rows
+            and portfolio_risk_state.weekly_realized_R == 0.0
+        ):
+            portfolio_risk_state.weekly_realized_R = float(today_portfolio_row.daily_realized_r)
+            portfolio_risk_state.weekly_realized_pnl = float(today_portfolio_row.daily_realized_usd or 0)
+
+        if today_portfolio_row is not None:
+            portfolio_risk_state.halted = today_portfolio_row.halted
+            portfolio_risk_state.halt_reason = today_portfolio_row.halt_reason or ""
+
+    async def _persist_portfolio_risk_state(as_of: datetime) -> None:
+        if pg_store is None:
+            return
+        await _sync_portfolio_open_risk_from_repo()
+        trade_day = portfolio_risk_state.trade_date
+        daily_rows = await pg_store.get_risk_daily_strategies_for_date(trade_day)
+        existing_row = await pg_store.get_risk_daily_portfolio(trade_day)
+        await pg_store.upsert_risk_daily_portfolio(
+            _build_portfolio_daily_row(
+                trade_date=trade_day,
+                daily_rows=daily_rows,
+                open_risk_r=portfolio_risk_state.open_risk_R,
+                existing_row=existing_row,
+                as_of=as_of,
+            )
+        )
 
     async def get_strategy_risk(sid: str) -> StrategyRiskState:
         # L1 fix: reset risk state at date boundary
@@ -121,7 +331,12 @@ async def build_oms_service(
                 )
         if sid not in strategy_risk_states:
             strategy_risk_states[sid] = StrategyRiskState(strategy_id=sid, trade_date=today)
-        return strategy_risk_states[sid]
+        state = strategy_risk_states[sid]
+        await _sync_strategy_risk_from_repo(state)
+        existing_row = await _load_strategy_risk_from_store(state)
+        if pg_store is not None and existing_row is None:
+            await _persist_strategy_risk_state(state, datetime.now(timezone.utc))
+        return state
 
     async def get_portfolio_risk() -> PortfolioRiskState:
         # L1 fix: reset portfolio risk state at date boundary
@@ -140,6 +355,8 @@ async def build_oms_service(
             portfolio_risk_state.strategy_daily_pnl = {}
             portfolio_risk_state.halted = False
             portfolio_risk_state.halt_reason = ""
+        await _sync_portfolio_open_risk_from_repo()
+        await _load_portfolio_risk_from_store(today)
         portfolio_risk_state.pending_entry_risk_R = await repo.get_pending_entry_risk_R(
             unit_risk_dollars
         )
@@ -154,14 +371,12 @@ async def build_oms_service(
     # Portfolio rules checker (cross-strategy coordination via shared DB)
     portfolio_checker = None
     if portfolio_rules_config is not None and db_pool is not None:
-        from ..persistence.postgres import PgStore as _PgStore
         from ..risk.portfolio_rules import PortfolioRuleChecker
 
-        _pg = _PgStore(db_pool)
         portfolio_checker = PortfolioRuleChecker(
             config=portfolio_rules_config,
-            get_strategy_signal=_pg.get_strategy_signal,
-            get_directional_risk_R=_pg.get_directional_risk_R,
+            get_strategy_signal=pg_store.get_strategy_signal,
+            get_directional_risk_R=pg_store.get_directional_risk_R,
             get_current_equity=get_current_equity or (lambda: 10_000.0),
             on_rule_event=_make_portfolio_rule_logger(),
         )
@@ -194,6 +409,8 @@ async def build_oms_service(
     _wire_adapter_callbacks(
         adapter, bus, repo, fill_proc, router,
         strategy_risk_states, portfolio_risk_state, unit_risk_dollars, open_positions,
+        persist_strategy_risk_state=_persist_strategy_risk_state,
+        persist_portfolio_risk_state=_persist_portfolio_risk_state,
     )
 
     # Build OMS service
@@ -204,7 +421,21 @@ async def build_oms_service(
         router=router,
         recon_interval_s=recon_interval_s,
         timeout_monitor=timeout_monitor,
+        get_portfolio_risk=get_portfolio_risk,
+        get_strategy_risk=get_strategy_risk,
     )
+
+    if pg_store is not None:
+        seed_state = strategy_risk_states.setdefault(
+            strategy_id,
+            StrategyRiskState(strategy_id=strategy_id, trade_date=date.today()),
+        )
+        await _sync_strategy_risk_from_repo(seed_state)
+        await _load_strategy_risk_from_store(seed_state)
+        seed_ts = datetime.now(timezone.utc)
+        await _persist_strategy_risk_state(seed_state, seed_ts)
+        await _load_portfolio_risk_from_store(seed_state.trade_date)
+        await _persist_portfolio_risk_state(seed_ts)
 
     logger.info(f"OMS factory built for strategy {strategy_id}")
     return oms
@@ -229,6 +460,8 @@ def _task_exception_handler(task: "asyncio.Task") -> None:
 def _wire_adapter_callbacks(
     adapter, bus: EventBus, repo, fill_proc: FillProcessor, router,
     strategy_risk_states, portfolio_risk_state, unit_risk_dollars, open_positions,
+    persist_strategy_risk_state=None,
+    persist_portfolio_risk_state=None,
 ) -> None:
     """Wire IBKRExecutionAdapter callbacks to OMS event bus.
 
@@ -491,6 +724,10 @@ def _wire_adapter_callbacks(
                     last_update_at=fill_ts,
                 )
             await repo.save_position(oms_pos)
+            if persist_strategy_risk_state is not None:
+                await persist_strategy_risk_state(strat_risk, fill_ts)
+            if persist_portfolio_risk_state is not None:
+                await persist_portfolio_risk_state(fill_ts)
 
             logger.info(f"Adapter fill processed: {oms_order_id} {qty}@{price} for {sid}")
 
