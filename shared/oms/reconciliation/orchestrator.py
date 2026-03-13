@@ -43,12 +43,9 @@ class ReconciliationOrchestrator:
         # Fetch broker state
         broker_orders = await self._adapter.request_open_orders()
         broker_positions = await self._adapter.request_positions()
-        broker_executions = await self._adapter.request_executions()
-
         logger.info(
             f"Broker state: {len(broker_orders)} orders, "
-            f"{len(broker_positions)} positions, "
-            f"{len(broker_executions)} executions"
+            f"{len(broker_positions)} positions"
         )
 
         # C3 fix: Compare against OMS DB state

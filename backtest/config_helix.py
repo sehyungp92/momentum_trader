@@ -32,7 +32,7 @@ class Helix4AblationFlags:
     use_class_T: bool = True               # Class T 4H trend continuation
     enable_ETH_Europe: bool = False        # ETH_EUROPE longs (disabled: -$6.9k drag)
     use_eth_europe_regime: bool = False    # Regime-conditional ETH_EUROPE (off by default)
-    use_rtd_dead_enhanced: bool = False    # RTH_DEAD enhanced sizing (off by default)
+    use_rtd_dead_enhanced: bool = True     # RTH_DEAD enhanced sizing (matches live)
 
     # Position management toggles
     use_momentum_stall: bool = False       # bar 8 stall exit (disabled: -$9.9k drag)

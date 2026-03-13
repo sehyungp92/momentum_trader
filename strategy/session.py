@@ -2,7 +2,7 @@
 
 v4.0 changes:
 - RTH_DEAD narrowed to 11:30-12:30 (opens RTH_PRIME2 at 12:30)
-- ETH_EUROPE entries allowed for longs with alignment >= 1
+- ETH_EUROPE entries blocked (confirmed losers: WR=14%, avgR=-0.436 even with regime filters)
 """
 from __future__ import annotations
 
@@ -37,7 +37,6 @@ def entries_allowed(block: SessionBlock) -> bool:
         SessionBlock.RTH_DEAD,
         SessionBlock.ETH_QUALITY_AM, SessionBlock.ETH_QUALITY_PM,
         SessionBlock.ETH_OVERNIGHT,
-        SessionBlock.ETH_EUROPE,       # v4.0: conditional entry (longs, alignment >= 1)
     }
 
 

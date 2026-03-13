@@ -39,7 +39,7 @@ def _make_checker(config, captured_events, equity=10_000.0, dir_risk=0.0, signal
 
 def test_directional_cap_denial_emits_event(config, captured_events):
     checker = _make_checker(config, captured_events, dir_risk=3.0)
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         checker.check_entry("AKC_Helix_v31", "LONG", new_risk_R=1.0)
     )
     assert result.approved is False
@@ -53,7 +53,7 @@ def test_directional_cap_denial_emits_event(config, captured_events):
 def test_drawdown_tier_emits_event(config, captured_events):
     # 10% DD = tier 2 (50% sizing)
     checker = _make_checker(config, captured_events, equity=9_000.0)
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         checker.check_entry("AKC_Helix_v31", "LONG", new_risk_R=0.5)
     )
     assert result.approved is True
@@ -66,7 +66,7 @@ def test_drawdown_tier_emits_event(config, captured_events):
 
 def test_no_event_when_all_pass_at_full_size(config, captured_events):
     checker = _make_checker(config, captured_events)
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         checker.check_entry("AKC_Helix_v31", "LONG", new_risk_R=0.5)
     )
     assert result.approved is True
