@@ -1703,6 +1703,9 @@ class VdubNQv4Engine:
     async def _fetch_bars(self) -> None:
         nq = self._get_contract("NQ")
         es = self._get_contract("ES")
+        for c in [nq, es]:
+            if c is not None:
+                await self._ib.ib.qualifyContractsAsync(c)
 
         # 15m NQ
         bars = await self._req_bars(nq, "30 D", "15 mins")

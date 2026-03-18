@@ -2242,6 +2242,9 @@ class NQDTCEngine:
         contract = self._get_contract()
         if contract is None:
             return
+        contracts = await self._ib.ib.qualifyContractsAsync(contract)
+        if contracts:
+            contract = contracts[0]
 
         try:
             bars_5m = await self._ib.ib.reqHistoricalDataAsync(
