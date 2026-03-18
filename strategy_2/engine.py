@@ -2329,16 +2329,10 @@ class NQDTCEngine:
         }
 
     def _get_contract(self) -> Any:
-        """Build NQ futures contract.
-
-        NOTE: Production should resolve active contract using IB contract
-        details + volume/OI rules and implement roll logic.
-        """
+        """Build continuous NQ futures contract for historical data."""
         try:
-            from ib_async import Future
-            c = Future(symbol=self._symbol, exchange="CME", currency="USD")
-            c.tradingClass = self._symbol
-            return c
+            from ib_async import ContFuture
+            return ContFuture(symbol=self._symbol, exchange="CME", currency="USD")
         except Exception:
             logger.warning("Cannot build contract for %s", self._symbol)
             return None

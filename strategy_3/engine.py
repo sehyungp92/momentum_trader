@@ -1755,10 +1755,8 @@ class VdubNQv4Engine:
 
     def _get_contract(self, sym: str) -> Any | None:
         try:
-            from ib_async import Future
-            c = Future(symbol=sym, exchange="CME", currency="USD")
-            c.tradingClass = sym
-            return c
+            from ib_async import ContFuture
+            return ContFuture(symbol=sym, exchange="CME", currency="USD")
         except Exception:
             logger.warning("Cannot build contract for %s", sym)
             return None

@@ -273,9 +273,8 @@ class Helix4Engine:
         logger.info("Helix4Engine stopped")
 
     async def _qualify_contract(self):
-        from ib_async import Future
-        contract = Future(symbol="NQ", exchange="CME", currency="USD")
-        contract.tradingClass = "NQ"
+        from ib_async import ContFuture
+        contract = ContFuture(symbol="NQ", exchange="CME", currency="USD")
         contracts = await self.ib.ib.qualifyContractsAsync(contract)
         return contracts[0] if contracts else contract
 
