@@ -52,19 +52,29 @@ async def main() -> None:
     instruments = build_instruments()
     logger.info("Registered %d instruments", len(instruments))
 
-    # 6. Fetch equity
-    equity = 100_000.0
-    try:
-        accounts = session.ib.managedAccounts()
-        if accounts:
-            summary = await session.ib.accountSummaryAsync(accounts[0])
-            for item in summary:
-                if item.tag == "NetLiquidation" and item.currency == "USD":
-                    equity = float(item.value)
-                    logger.info("Account equity: $%.2f", equity)
-                    break
-    except Exception:
-        logger.warning("Could not fetch equity, using default $%.2f", equity)
+    # 6. Fetch equity (paper mode uses DB-tracked equity)
+    import os
+    paper_mode = os.getenv("ALGO_TRADER_ENV", "").lower() == "paper"
+    paper_equity_pool = None
+
+    if paper_mode:
+        from shared.oms.paper_equity import load_paper_equity
+        equity = await load_paper_equity(bootstrap_ctx.pool)
+        paper_equity_pool = bootstrap_ctx.pool
+        logger.info("Paper mode equity: $%.2f", equity)
+    else:
+        equity = 100_000.0
+        try:
+            accounts = session.ib.managedAccounts()
+            if accounts:
+                summary = await session.ib.accountSummaryAsync(accounts[0])
+                for item in summary:
+                    if item.tag == "NetLiquidation" and item.currency == "USD":
+                        equity = float(item.value)
+                        logger.info("Account equity: $%.2f", equity)
+                        break
+        except Exception:
+            logger.warning("Could not fetch equity, using default $%.2f", equity)
 
     # 7. Build OMS
     unit_risk_dollars = RiskCalculator.compute_unit_risk_dollars(nav=equity, unit_risk_pct=RISK_PCT)
@@ -83,6 +93,7 @@ async def main() -> None:
         db_pool=bootstrap_ctx.pool,
         portfolio_rules_config=portfolio_rules,
         get_current_equity=lambda: equity,
+        paper_equity_pool=paper_equity_pool,
     )
     await oms.start()
     logger.info("OMS started")

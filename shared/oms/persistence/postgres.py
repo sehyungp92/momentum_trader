@@ -411,6 +411,21 @@ ORDER BY t.entry_ts DESC;
 
 
 -- ============================================================
+-- Paper Trading Equity Tracker (paper mode only)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS paper_equity (
+    id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    equity NUMERIC NOT NULL DEFAULT 10000.0,
+    initial_equity NUMERIC NOT NULL DEFAULT 10000.0,
+    total_pnl NUMERIC NOT NULL DEFAULT 0.0,
+    total_commission NUMERIC NOT NULL DEFAULT 0.0,
+    trade_count INT NOT NULL DEFAULT 0,
+    last_update_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+
+-- ============================================================
 -- MIGRATION: Rename old risk_daily to risk_daily_strategy
 -- ============================================================
 

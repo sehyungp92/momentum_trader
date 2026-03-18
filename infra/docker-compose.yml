@@ -6,19 +6,14 @@ services:
       dockerfile: Dockerfile
     container_name: trading_helix
     restart: unless-stopped
+    network_mode: host
     command: ["python", "-m", "strategy"]
     env_file:
       - ../.env
     environment:
       IB_CLIENT_ID: ${IB_CLIENT_ID_HELIX:-11}
-      INSTRUMENTATION_RELAY_URL: "http://host.docker.internal:8001/events"
-      INSTRUMENTATION_HMAC_SECRET: ${INSTRUMENTATION_HMAC_SECRET:-}
     volumes:
       - helix_instrumentation:/app/instrumentation/data
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - trading_net
 
   nqdtc:
     profiles: ["nqdtc"]
@@ -27,19 +22,14 @@ services:
       dockerfile: Dockerfile
     container_name: trading_nqdtc
     restart: unless-stopped
+    network_mode: host
     command: ["python", "-m", "strategy_2"]
     env_file:
       - ../.env
     environment:
       IB_CLIENT_ID: ${IB_CLIENT_ID_NQDTC:-12}
-      INSTRUMENTATION_RELAY_URL: "http://host.docker.internal:8001/events"
-      INSTRUMENTATION_HMAC_SECRET: ${INSTRUMENTATION_HMAC_SECRET:-}
     volumes:
       - nqdtc_instrumentation:/app/instrumentation/data
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - trading_net
 
   vdubus:
     profiles: ["vdubus"]
@@ -48,25 +38,16 @@ services:
       dockerfile: Dockerfile
     container_name: trading_vdubus
     restart: unless-stopped
+    network_mode: host
     command: ["python", "-m", "strategy_3"]
     env_file:
       - ../.env
     environment:
       IB_CLIENT_ID: ${IB_CLIENT_ID_VDUBUS:-13}
-      INSTRUMENTATION_RELAY_URL: "http://host.docker.internal:8001/events"
-      INSTRUMENTATION_HMAC_SECRET: ${INSTRUMENTATION_HMAC_SECRET:-}
     volumes:
       - vdubus_instrumentation:/app/instrumentation/data
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - trading_net
 
 volumes:
   helix_instrumentation:
   nqdtc_instrumentation:
   vdubus_instrumentation:
-
-networks:
-  trading_net:
-    external: true

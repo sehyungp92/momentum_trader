@@ -130,6 +130,7 @@ async def build_oms_service(
     db_pool: Optional[asyncpg.Pool] = None,
     portfolio_rules_config=None,  # Optional[PortfolioRulesConfig]
     get_current_equity: Optional[callable] = None,
+    paper_equity_pool: Optional[asyncpg.Pool] = None,
 ) -> OMSService:
     """Build a fully wired OMS service.
 
@@ -170,6 +171,19 @@ async def build_oms_service(
         portfolio_daily_stop_R=portfolio_daily_stop_R,
         strategy_configs={strategy_id: strat_cfg},
     )
+
+    # Paper equity tracker (paper mode only)
+    _paper_equity: list[Optional[float]] = [None]  # mutable container for closure
+    if paper_equity_pool is not None:
+        from ..paper_equity import load_paper_equity
+        _paper_equity[0] = await load_paper_equity(paper_equity_pool)
+        get_current_equity = lambda: _paper_equity[0]
+        # Derive actual risk pct from caller's unit_risk_dollars / current equity
+        # (each strategy has different risk pct; the default 0.0035 on StrategyRiskConfig
+        #  would under-size by 2-4x after the first dynamic recalculation)
+        if _paper_equity[0] > 0:
+            strat_cfg.unit_risk_pct = unit_risk_dollars / _paper_equity[0]
+        logger.info("Paper equity mode enabled: $%.2f (risk_pct=%.4f)", _paper_equity[0], strat_cfg.unit_risk_pct)
 
     # Event calendar (empty if not provided)
     if calendar is None:
@@ -411,6 +425,9 @@ async def build_oms_service(
         strategy_risk_states, portfolio_risk_state, unit_risk_dollars, open_positions,
         persist_strategy_risk_state=_persist_strategy_risk_state,
         persist_portfolio_risk_state=_persist_portfolio_risk_state,
+        paper_equity=_paper_equity,
+        paper_equity_pool=paper_equity_pool,
+        strat_cfg=strat_cfg,
     )
 
     # Build OMS service
@@ -462,6 +479,9 @@ def _wire_adapter_callbacks(
     strategy_risk_states, portfolio_risk_state, unit_risk_dollars, open_positions,
     persist_strategy_risk_state=None,
     persist_portfolio_risk_state=None,
+    paper_equity=None,
+    paper_equity_pool=None,
+    strat_cfg=None,
 ) -> None:
     """Wire IBKRExecutionAdapter callbacks to OMS event bus.
 
@@ -650,6 +670,15 @@ def _wire_adapter_callbacks(
                     pos["open_qty"] += qty
                     pos["entry_price"] = (old_total + price * qty) / pos["open_qty"]
 
+                # Paper equity: deduct entry commission
+                if paper_equity is not None and paper_equity[0] is not None and paper_equity_pool is not None and commission > 0:
+                    try:
+                        from ..paper_equity import apply_paper_pnl
+                        new_eq = await apply_paper_pnl(paper_equity_pool, 0.0, commission)
+                        paper_equity[0] = new_eq
+                    except Exception as e:
+                        logger.warning("Paper equity entry commission failed (non-fatal): %s", e)
+
                 # Write cross-strategy signal to shared DB
                 if db_pool is not None:
                     try:
@@ -693,6 +722,18 @@ def _wire_adapter_callbacks(
                     portfolio_risk_state.strategy_daily_pnl[sid] = (
                         portfolio_risk_state.strategy_daily_pnl.get(sid, 0.0) + pnl
                     )
+
+                    # Paper equity: apply realized P&L + exit commission
+                    if paper_equity is not None and paper_equity[0] is not None and paper_equity_pool is not None:
+                        try:
+                            from ..paper_equity import apply_paper_pnl
+                            new_eq = await apply_paper_pnl(paper_equity_pool, pnl, commission)
+                            paper_equity[0] = new_eq
+                            if strat_cfg is not None and new_eq > 0:
+                                strat_cfg.unit_risk_dollars = new_eq * strat_cfg.unit_risk_pct
+                            logger.info("Paper equity: $%.2f (pnl=$%.2f, comm=$%.2f)", new_eq, pnl, commission)
+                        except Exception as e:
+                            logger.warning("Paper equity update failed (non-fatal): %s", e)
 
                     pos["open_qty"] = max(0, pos["open_qty"] - qty)
                     if pos["open_qty"] <= 0:
