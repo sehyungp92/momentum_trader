@@ -337,7 +337,7 @@ class Helix4Engine:
         self._news = NewsCalendar()
 
         # Drawdown throttle
-        from backtest.engine.risk_throttle import DrawdownThrottle
+        from shared.risk_throttle import DrawdownThrottle
         self._throttle = DrawdownThrottle(bt_config.initial_equity)
 
         # Load news calendar if provided

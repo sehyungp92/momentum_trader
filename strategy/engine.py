@@ -33,7 +33,7 @@ from .pivots import PivotDetector
 from .signals import SignalEngine, alignment_score, trend_strength
 from .gates import check_gates, GateResult
 from .risk import RiskEngine
-from backtest.engine.risk_throttle import DrawdownThrottle
+from shared.risk_throttle import DrawdownThrottle
 from .execution import ExecutionEngine
 
 from shared.oms.models.intent import Intent, IntentType

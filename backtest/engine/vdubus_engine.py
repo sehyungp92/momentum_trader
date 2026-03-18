@@ -332,7 +332,7 @@ class VdubusEngine:
         self.event_state = EventBlockState()
 
         # Drawdown throttle
-        from backtest.engine.risk_throttle import DrawdownThrottle
+        from shared.risk_throttle import DrawdownThrottle
         self._throttle = DrawdownThrottle(bt_config.initial_equity)
 
         # Shadow tracker

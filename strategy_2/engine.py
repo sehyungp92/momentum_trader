@@ -21,7 +21,7 @@ from shared.oms.models.order import (
 from shared.oms.risk.calculator import RiskCalculator
 from shared.services.trade_recorder import TradeRecorder
 
-from backtest.engine.risk_throttle import DrawdownThrottle, DrawdownThrottleConfig
+from shared.risk_throttle import DrawdownThrottle, DrawdownThrottleConfig
 from . import box as box_mod
 from . import config as C
 from . import indicators as ind

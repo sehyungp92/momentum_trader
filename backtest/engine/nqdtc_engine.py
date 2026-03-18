@@ -365,7 +365,7 @@ class NQDTCEngine:
         self.daily_risk = DailyRiskState()
 
         # Drawdown throttle (daily cap disabled — NQDTC has its own via DailyRiskState)
-        from backtest.engine.risk_throttle import DrawdownThrottle, DrawdownThrottleConfig
+        from shared.risk_throttle import DrawdownThrottle, DrawdownThrottleConfig
         self._throttle = DrawdownThrottle(
             bt_config.initial_equity,
             DrawdownThrottleConfig(daily_loss_cap_r=None),
