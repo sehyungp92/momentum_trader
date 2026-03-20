@@ -69,7 +69,7 @@ class ReconciliationOrchestrator:
             broker_info = self._adapter.cache.contracts
             for con_id, spec in broker_info.items():
                 if spec.symbol == pos.instrument_symbol:
-                    oms_position_map[con_id] = pos.net_qty
+                    oms_position_map[con_id] = oms_position_map.get(con_id, 0.0) + pos.net_qty
                     break
 
         # Reconcile positions

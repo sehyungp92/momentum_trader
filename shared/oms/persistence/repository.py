@@ -45,8 +45,10 @@ class OMSRepository:
                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23::jsonb,$24,$25,$26,$27)
                 ON CONFLICT (oms_order_id) DO UPDATE SET
                     status=$13, broker_order_id=$15, perm_id=$16,
+                    qty=$7, limit_price=$9, stop_price=$10,
                     filled_qty=$18, remaining_qty=$19, avg_fill_price=$20,
-                    reprice_count=$21, submitted_at=$25, acked_at=$26, last_update_at=$27
+                    reprice_count=$21, risk_context=$23::jsonb,
+                    submitted_at=$25, acked_at=$26, last_update_at=$27
                 """,
                 order.oms_order_id,
                 order.client_order_id,
@@ -167,7 +169,6 @@ class OMSRepository:
         for row in rows:
             rc = row.get("risk_context")
             if rc:
-                import json
                 data = json.loads(rc) if isinstance(rc, str) else rc
                 risk = data.get("risk_dollars", 0.0)
                 # Scale by remaining qty for partially filled orders
@@ -175,8 +176,10 @@ class OMSRepository:
                     qty = row.get("qty") or 1
                     remaining = row.get("remaining_qty") or 0
                     risk = risk * (remaining / qty) if qty > 0 else 0.0
-                total_risk += risk
-        return total_risk / unit_risk_dollars if unit_risk_dollars > 0 else 0.0
+                # Normalize by the order's own unit_risk_dollars (cross-strategy correctness)
+                order_unit = data.get("unit_risk_dollars") or unit_risk_dollars
+                total_risk += risk / order_unit if order_unit > 0 else 0.0
+        return total_risk
 
     async def get_working_orders(
         self, strategy_id: str, instrument_symbol: str = None

@@ -49,6 +49,9 @@ class ContractFactory:
         if cached and (time.monotonic() - cached[2]) < self._cache_ttl_s:
             return cached[0], cached[1]
 
+        if not expiry:
+            logger.warning("Blank expiry for %s — IB may resolve to front-month", symbol)
+
         contract = Future(
             symbol=tmpl.symbol,
             exchange=tmpl.exchange,
@@ -59,10 +62,12 @@ class ContractFactory:
             contract.tradingClass = tmpl.trading_class
 
         qualified = await self._ib.qualifyContractsAsync(contract)
-        if not qualified:
+        if not qualified or qualified[0] is None:
             raise ContractResolutionError(f"Failed to qualify {symbol} {expiry}")
 
         q = qualified[0]
+        if not q.conId:
+            raise ContractResolutionError(f"Qualified contract has no conId: {symbol} {expiry}")
         spec = IBContractSpec(
             con_id=q.conId,
             symbol=q.symbol,

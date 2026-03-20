@@ -93,8 +93,10 @@ class InMemoryRepository:
                         qty = order.qty or 1
                         remaining = order.remaining_qty or 0
                         risk = risk * (remaining / qty) if qty > 0 else 0.0
-                    total_risk += risk
-        return total_risk / unit_risk_dollars if unit_risk_dollars > 0 else 0.0
+                    # Normalize by the order's own unit_risk_dollars (cross-strategy correctness)
+                    order_unit = order.risk_context.unit_risk_dollars or unit_risk_dollars
+                    total_risk += risk / order_unit if order_unit > 0 else 0.0
+        return total_risk
 
     async def get_working_orders(
         self, strategy_id: str, instrument_symbol: str = None

@@ -15,6 +15,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, date, timezone, timedelta
 from typing import Optional, Callable, Awaitable
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ class PortfolioRulesConfig:
     # Proximity cooldown (Helix <-> NQDTC, bidirectional)
     helix_nqdtc_cooldown_minutes: int = 120
     cooldown_session_only: bool = True           # only enforce during 09:45-11:30 ET overlap
-    helix_strategy_id: str = "AKC_Helix_v31"
+    helix_strategy_id: str = "AKC_Helix_v40"
     nqdtc_strategy_id: str = "NQDTC_v2.1"
 
     # NQDTC direction filter (affects Vdubus)
@@ -180,7 +181,7 @@ class PortfolioRuleChecker:
 
         # Session-only mode: skip cooldown outside 09:45-11:30 ET overlap
         if self._cfg.cooldown_session_only:
-            now_et = datetime.now(timezone(timedelta(hours=-5)))
+            now_et = datetime.now(ZoneInfo("America/New_York"))
             hour_min = now_et.hour * 60 + now_et.minute
             if not (9 * 60 + 45 <= hour_min <= 11 * 60 + 30):
                 return None
@@ -214,7 +215,7 @@ class PortfolioRuleChecker:
             return 1.0  # No NQDTC trade today — no filter
 
         # Only apply if NQDTC traded today
-        today = date.today()
+        today = datetime.now(ZoneInfo("America/New_York")).date()
         if nqdtc_signal["signal_date"] != today:
             return 1.0
 

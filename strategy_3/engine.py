@@ -155,6 +155,7 @@ class VdubNQv4Engine:
         self._instruments = {i.symbol: i for i in instruments}
         self._recorder = trade_recorder
         self._equity = equity
+        self._symbol = C.DEFAULT_SYMBOL
         self._instr = instrumentation
 
         from instrumentation.src.facade import InstrumentationKit
@@ -259,7 +260,7 @@ class VdubNQv4Engine:
             return
         try:
             self._kit.log_missed(
-                pair="NQ",
+                pair=self._symbol,
                 side="LONG" if direction == Direction.LONG else "SHORT",
                 signal=signal_type.value if hasattr(signal_type, 'value') else str(signal_type),
                 signal_id=signal_id, signal_strength=signal_strength,
@@ -359,7 +360,7 @@ class VdubNQv4Engine:
     def get_position_snapshot(self) -> list[dict]:
         """Return current position state for heartbeat emission."""
         result = []
-        inst = self._instruments.get("NQ")
+        inst = self._instruments.get(self._symbol)
         pv = inst.point_value if inst else 5.0
         for pos in self.positions:
             if pos.qty_open <= 0:
@@ -437,7 +438,7 @@ class VdubNQv4Engine:
                 c = float(self._c15[-1]) if len(self._c15) > 0 else 0.0
                 svwap = float(self._svwap[-1]) if len(self._svwap) > 0 else 0.0
                 self._kit.on_indicator_snapshot(
-                    pair="NQ",
+                    pair=self._symbol,
                     indicators={
                         "close": c,
                         "momentum": float(self._mom15[-1]) if len(self._mom15) > 0 else 0.0,
@@ -1155,7 +1156,7 @@ class VdubNQv4Engine:
         if self.working_entries:
             self._log_missed(direction, signal_type, f"{signal_type.value}_{direction.name}_{self._bar_idx}", "WORKING_ORDER_EXISTS", "working entry already pending")
             return
-        inst = self._instruments.get("NQ")
+        inst = self._instruments.get(self._symbol)
         if inst is None:
             return
         side = OrderSide.BUY if direction == Direction.LONG else OrderSide.SELL
@@ -1216,7 +1217,7 @@ class VdubNQv4Engine:
         )
 
     async def _submit_fallback_market(self, we: WorkingEntry) -> None:
-        inst = self._instruments.get("NQ")
+        inst = self._instruments.get(self._symbol)
         if inst is None:
             return
         side = OrderSide.BUY if we.direction == Direction.LONG else OrderSide.SELL
@@ -1250,7 +1251,7 @@ class VdubNQv4Engine:
             self.working_entries[receipt.oms_order_id] = fb
 
     async def _submit_partial_exit(self, pos: PositionState, qty: int) -> None:
-        inst = self._instruments.get("NQ")
+        inst = self._instruments.get(self._symbol)
         if inst is None:
             return
         side = OrderSide.SELL if pos.direction == Direction.LONG else OrderSide.BUY
@@ -1265,7 +1266,7 @@ class VdubNQv4Engine:
         await self._oms.submit_intent(intent)
 
     async def _place_stop(self, pos: PositionState) -> None:
-        inst = self._instruments.get("NQ")
+        inst = self._instruments.get(self._symbol)
         if inst is None:
             return
         side = OrderSide.SELL if pos.direction == Direction.LONG else OrderSide.BUY
@@ -1314,7 +1315,7 @@ class VdubNQv4Engine:
         # Flatten via OMS
         await self._oms.submit_intent(Intent(
             intent_type=IntentType.FLATTEN,
-            strategy_id=C.STRATEGY_ID, instrument_symbol="NQ",
+            strategy_id=C.STRATEGY_ID, instrument_symbol=self._symbol,
         ))
 
         # Record exit
@@ -1356,7 +1357,7 @@ class VdubNQv4Engine:
                 )
                 _ba = self._get_bid_ask()
                 self._kit.on_orderbook_context(
-                    pair="NQ",
+                    pair=self._symbol,
                     best_bid=_ba[0] if _ba else price,
                     best_ask=_ba[1] if _ba else price,
                     trade_context="exit",
@@ -1424,7 +1425,7 @@ class VdubNQv4Engine:
         if self._recorder:
             try:
                 trade_id = await self._recorder.record_entry(
-                    strategy_id=C.STRATEGY_ID, instrument="NQ",
+                    strategy_id=C.STRATEGY_ID, instrument=self._symbol,
                     direction="LONG" if we.direction == Direction.LONG else "SHORT",
                     quantity=fill_qty, entry_price=Decimal(str(fill_price)),
                     entry_ts=fill_time, setup_tag=we.entry_type.value,
@@ -1497,7 +1498,7 @@ class VdubNQv4Engine:
 
                 self._kit.log_entry(
                     trade_id=trade_id,
-                    pair="NQ",
+                    pair=self._symbol,
                     side="LONG" if we.direction == Direction.LONG else "SHORT",
                     entry_price=fill_price,
                     position_size=fill_qty,
@@ -1540,7 +1541,7 @@ class VdubNQv4Engine:
                 # Phase 2B: emit orderbook context at entry
                 _ba = self._get_bid_ask()
                 self._kit.on_orderbook_context(
-                    pair="NQ",
+                    pair=self._symbol,
                     best_bid=_ba[0] if _ba else fill_price,
                     best_ask=_ba[1] if _ba else fill_price,
                     trade_context="entry",
@@ -1593,7 +1594,7 @@ class VdubNQv4Engine:
                         )
                         _ba = self._get_bid_ask()
                         self._kit.on_orderbook_context(
-                            pair="NQ",
+                            pair=self._symbol,
                             best_bid=_ba[0] if _ba else fill_price,
                             best_ask=_ba[1] if _ba else fill_price,
                             trade_context="exit",
@@ -1649,7 +1650,7 @@ class VdubNQv4Engine:
         """Current bid-ask spread in ticks, or None if unavailable."""
         try:
             for t in self._ib.ib.tickers():
-                if t.contract and t.contract.symbol == "NQ":
+                if t.contract and t.contract.symbol == self._symbol:
                     if t.bid > 0 and t.ask > 0:
                         return (t.ask - t.bid) / C.NQ_SPEC["tick"]
         except Exception:
@@ -1660,7 +1661,7 @@ class VdubNQv4Engine:
         """Return (bid, ask) from IB tickers, or None if unavailable."""
         try:
             for t in self._ib.ib.tickers():
-                if t.contract and t.contract.symbol == "NQ":
+                if t.contract and t.contract.symbol == self._symbol:
                     if t.bid > 0 and t.ask > 0:
                         return (t.bid, t.ask)
         except Exception:
@@ -1684,6 +1685,7 @@ class VdubNQv4Engine:
                 for item in summary:
                     if item.tag == "NetLiquidation" and item.currency == "USD":
                         self._equity = float(item.value)
+                        self._throttle.update_equity(self._equity)
                         return
         except Exception:
             pass
@@ -1701,7 +1703,13 @@ class VdubNQv4Engine:
         )
 
     async def _fetch_bars(self) -> None:
-        nq = self._get_contract("NQ")
+        if not self._ib.is_connected:
+            if not getattr(self, '_fetch_disconn_logged', False):
+                logger.warning("Skipping bar fetch — IB not connected")
+                self._fetch_disconn_logged = True
+            return
+        self._fetch_disconn_logged = False
+        nq = self._get_contract(self._symbol)
         es = self._get_contract("ES")
         for c in [nq, es]:
             if c is not None:

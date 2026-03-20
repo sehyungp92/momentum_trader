@@ -74,5 +74,10 @@ class IBSession:
         await self._throttler.acquire(channel)
 
     @property
+    def is_connected(self) -> bool:
+        """True when the underlying IB socket is connected."""
+        return self._conn.is_connected
+
+    @property
     def is_congested(self) -> bool:
         return self._throttler.is_congested

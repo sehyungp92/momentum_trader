@@ -58,9 +58,17 @@ class FillProcessor:
 
         # Transition state
         if order.remaining_qty <= 0:
-            transition(order, OrderStatus.FILLED)
+            if not transition(order, OrderStatus.FILLED):
+                logger.warning(
+                    "Fill on order %s in state %s — status not updated",
+                    oms_order_id, order.status.value,
+                )
         else:
-            transition(order, OrderStatus.PARTIALLY_FILLED)
+            if not transition(order, OrderStatus.PARTIALLY_FILLED):
+                logger.warning(
+                    "Partial fill on order %s in state %s — status not updated",
+                    oms_order_id, order.status.value,
+                )
 
         order.last_update_at = timestamp
         await self._repo.save_order(order)

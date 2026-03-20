@@ -30,6 +30,7 @@ services:
       IB_CLIENT_ID: ${IB_CLIENT_ID_NQDTC:-12}
     volumes:
       - nqdtc_instrumentation:/app/instrumentation/data
+      - nqdtc_state:/app/state
 
   vdubus:
     profiles: ["vdubus"]
@@ -50,4 +51,5 @@ services:
 volumes:
   helix_instrumentation:
   nqdtc_instrumentation:
+  nqdtc_state:
   vdubus_instrumentation:

@@ -70,6 +70,7 @@ async def main() -> None:
             logger.warning("Using default equity $%.2f", equity)
 
     unit_risk = RiskCalculator.compute_unit_risk_dollars(nav=equity, unit_risk_pct=BASE_RISK_PCT)
+    _live_equity = [equity]
 
     from shared.oms.risk.portfolio_rules import PortfolioRulesConfig
     portfolio_rules = PortfolioRulesConfig(initial_equity=equity)
@@ -83,7 +84,7 @@ async def main() -> None:
         portfolio_daily_stop_R=PORTFOLIO_DAILY_STOP_R,
         db_pool=bootstrap_ctx.pool,
         portfolio_rules_config=portfolio_rules,
-        get_current_equity=lambda: equity,
+        get_current_equity=lambda: _live_equity[0],
         paper_equity_pool=paper_equity_pool,
     )
     await oms.start()
@@ -118,12 +119,19 @@ async def main() -> None:
             while True:
                 try:
                     sidecar_diag = instr.get_sidecar_diagnostics() if instr else None
+                    is_conn = session.is_connected
+                    mode = "RUNNING" if is_conn else "DEGRADED"
                     await emit_heartbeat(
-                        bootstrap_ctx.pg_store, STRATEGY_ID, mode="RUNNING",
+                        bootstrap_ctx.pg_store, STRATEGY_ID, mode=mode,
                         sidecar_diagnostics=sidecar_diag,
                     )
                 except Exception as e:
                     logger.warning("Heartbeat failed: %s", e)
+                # Sync live equity from engine refresh
+                try:
+                    _live_equity[0] = engine.equity
+                except Exception:
+                    pass
                 if instr:
                     try:
                         positions_data = engine.get_position_snapshot()

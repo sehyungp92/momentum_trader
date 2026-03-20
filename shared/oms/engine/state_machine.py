@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
     OrderStatus.CREATED: {OrderStatus.RISK_APPROVED, OrderStatus.REJECTED},
     OrderStatus.RISK_APPROVED: {OrderStatus.ROUTED, OrderStatus.REJECTED},
-    OrderStatus.ROUTED: {OrderStatus.ACKED, OrderStatus.REJECTED},
+    OrderStatus.ROUTED: {OrderStatus.ACKED, OrderStatus.REJECTED, OrderStatus.EXPIRED},
     OrderStatus.ACKED: {
         OrderStatus.WORKING,
         OrderStatus.FILLED,
@@ -39,7 +39,9 @@ TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
         OrderStatus.REPLACED,
         OrderStatus.CANCELLED,
         OrderStatus.FILLED,
+        OrderStatus.PARTIALLY_FILLED,
         OrderStatus.REJECTED,
+        OrderStatus.WORKING,
     },
     OrderStatus.REPLACED: {OrderStatus.DONE},
     OrderStatus.CANCELLED: {OrderStatus.DONE},

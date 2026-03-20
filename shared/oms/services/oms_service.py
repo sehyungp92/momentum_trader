@@ -101,4 +101,4 @@ class OMSService:
             try:
                 await self._reconciler.periodic_reconciliation()
             except Exception as e:
-                logger.error(f"Periodic recon failed: {e}")
+                logger.warning("Periodic recon failed: %s", e)

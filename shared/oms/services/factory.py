@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Callable, Optional
+from zoneinfo import ZoneInfo
 
 import asyncpg
 
@@ -26,6 +27,7 @@ from ..risk.gateway import RiskGateway
 from .oms_service import OMSService
 
 logger = logging.getLogger(__name__)
+_ET = ZoneInfo("America/New_York")
 
 
 def _to_decimal(value: float) -> Decimal:
@@ -191,7 +193,7 @@ async def build_oms_service(
 
     # Risk state providers
     strategy_risk_states: dict[str, StrategyRiskState] = {}
-    portfolio_risk_state = PortfolioRiskState(trade_date=date.today())
+    portfolio_risk_state = PortfolioRiskState(trade_date=datetime.now(_ET).date())
     pg_store = PgStore(db_pool) if db_pool is not None else None
     # Track open positions per strategy for exit P&L computation
     open_positions: dict[str, dict] = {}
@@ -333,7 +335,7 @@ async def build_oms_service(
 
     async def get_strategy_risk(sid: str) -> StrategyRiskState:
         # L1 fix: reset risk state at date boundary
-        today = date.today()
+        today = datetime.now(_ET).date()
         if sid in strategy_risk_states:
             existing = strategy_risk_states[sid]
             if existing.trade_date != today:
@@ -354,7 +356,7 @@ async def build_oms_service(
 
     async def get_portfolio_risk() -> PortfolioRiskState:
         # L1 fix: reset portfolio risk state at date boundary
-        today = date.today()
+        today = datetime.now(_ET).date()
         if portfolio_risk_state.trade_date != today:
             logger.info("Date boundary detected: resetting portfolio daily risk state")
             # Weekly reset on Monday (weekday 0)
@@ -445,7 +447,7 @@ async def build_oms_service(
     if pg_store is not None:
         seed_state = strategy_risk_states.setdefault(
             strategy_id,
-            StrategyRiskState(strategy_id=strategy_id, trade_date=date.today()),
+            StrategyRiskState(strategy_id=strategy_id, trade_date=datetime.now(_ET).date()),
         )
         await _sync_strategy_risk_from_repo(seed_state)
         await _load_strategy_risk_from_store(seed_state)
@@ -638,7 +640,7 @@ def _wire_adapter_callbacks(
             sid = order.strategy_id
             if sid not in strategy_risk_states:
                 strategy_risk_states[sid] = StrategyRiskState(
-                    strategy_id=sid, trade_date=date.today()
+                    strategy_id=sid, trade_date=datetime.now(_ET).date()
                 )
             strat_risk = strategy_risk_states[sid]
 

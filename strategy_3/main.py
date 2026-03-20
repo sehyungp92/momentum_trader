@@ -79,6 +79,7 @@ async def main() -> None:
     # 7. Build OMS
     unit_risk = RiskCalculator.compute_unit_risk_dollars(
         nav=equity, unit_risk_pct=BASE_RISK_PCT)
+    _live_equity = [equity]
 
     # Portfolio v4 cross-strategy rules
     from shared.oms.risk.portfolio_rules import PortfolioRulesConfig
@@ -93,7 +94,7 @@ async def main() -> None:
         portfolio_daily_stop_R=1.5,  # v6: tightened from 2.5
         db_pool=bootstrap_ctx.pool,
         portfolio_rules_config=portfolio_rules,
-        get_current_equity=lambda: equity,
+        get_current_equity=lambda: _live_equity[0],
         paper_equity_pool=paper_equity_pool,
     )
     await oms.start()
@@ -130,12 +131,19 @@ async def main() -> None:
             while True:
                 try:
                     sidecar_diag = instr.get_sidecar_diagnostics() if instr else None
+                    is_conn = session.is_connected
+                    mode = "RUNNING" if is_conn else "DEGRADED"
                     await emit_heartbeat(
-                        bootstrap_ctx.pg_store, STRATEGY_ID, mode="RUNNING",
+                        bootstrap_ctx.pg_store, STRATEGY_ID, mode=mode,
                         sidecar_diagnostics=sidecar_diag,
                     )
                 except Exception as e:
                     logger.warning("Heartbeat failed: %s", e)
+                # Sync live equity from engine refresh
+                try:
+                    _live_equity[0] = engine._equity
+                except Exception:
+                    pass
                 if instr:
                     try:
                         positions_data = engine.get_position_snapshot()

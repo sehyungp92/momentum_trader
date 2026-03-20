@@ -182,5 +182,6 @@ class RiskGateway:
 
         # Store computed risk for pending-entry tracking
         risk_ctx.risk_dollars = new_risk_dollars
+        risk_ctx.unit_risk_dollars = strat_cfg.unit_risk_dollars
 
         return None  # Approved

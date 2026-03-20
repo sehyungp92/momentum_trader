@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from ..models.intent import Intent, IntentType, IntentReceipt, IntentResult
-from ..models.order import OMSOrder, OrderStatus
+from ..models.order import OMSOrder, OrderStatus, TERMINAL_STATUSES
 
 if TYPE_CHECKING:
     from ..risk.gateway import RiskGateway
@@ -75,9 +75,14 @@ class IntentHandler:
         order.created_at = datetime.now(timezone.utc)
         order.remaining_qty = order.qty
 
+        # Persist order row first (satisfies FK for subsequent events)
+        await self._repo.save_order(order)
+
         # Risk check
         denial = await self._risk.check_entry(order)
         if denial:
+            order.status = OrderStatus.REJECTED
+            await self._repo.save_order(order)
             await self._repo.save_event(
                 order.oms_order_id, "RISK_DENIED", {"reason": denial}
             )
@@ -110,6 +115,9 @@ class IntentHandler:
             IntentResult.ACCEPTED, intent_id, oms_order_id=order.oms_order_id
         )
 
+    # States where cancel/replace make no sense
+    _UNCANCELLABLE = TERMINAL_STATUSES | {OrderStatus.DONE, OrderStatus.REPLACED}
+
     async def _handle_cancel(self, intent: Intent, intent_id: str) -> IntentReceipt:
         """Cancel a working order."""
         order = await self._repo.get_order(intent.target_oms_order_id)
@@ -117,15 +125,11 @@ class IntentHandler:
             return IntentReceipt(
                 IntentResult.DENIED, intent_id, denial_reason="Order not found"
             )
-        if order.status in {
-            OrderStatus.FILLED,
-            OrderStatus.CANCELLED,
-            OrderStatus.DONE,
-        }:
+        if order.status in self._UNCANCELLABLE:
             return IntentReceipt(
                 IntentResult.DENIED,
                 intent_id,
-                denial_reason=f"Order in terminal state: {order.status}",
+                denial_reason=f"Order in terminal state: {order.status.value}",
             )
 
         order.status = OrderStatus.CANCEL_REQUESTED
@@ -142,8 +146,21 @@ class IntentHandler:
             return IntentReceipt(
                 IntentResult.DENIED, intent_id, denial_reason="Order not found"
             )
+        if order.status in self._UNCANCELLABLE:
+            return IntentReceipt(
+                IntentResult.DENIED,
+                intent_id,
+                denial_reason=f"Cannot replace order in state: {order.status.value}",
+            )
 
         order.status = OrderStatus.REPLACE_REQUESTED
+        if intent.new_qty is not None:
+            order.qty = intent.new_qty
+            order.remaining_qty = intent.new_qty - order.filled_qty
+        if intent.new_limit_price is not None:
+            order.limit_price = intent.new_limit_price
+        if intent.new_stop_price is not None:
+            order.stop_price = intent.new_stop_price
         await self._repo.save_order(order)
         await self._router.replace(
             order, intent.new_qty, intent.new_limit_price, intent.new_stop_price
